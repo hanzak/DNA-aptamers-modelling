@@ -1,0 +1,23 @@
+#Generated gitignore. Change if needed.
+
+# Byte-compiled / optimized files
+__pycache__/
+*.pyc
+
+# Virtual environment
+dna-env/
+
+# IDE settings
+.vscode/
+
+# Data files
+*.csv
+*.xlsx
+
+# Model files
+*.model
+*.h5
+
+# Ignore all text files except the requirements
+*.txt
+!requirements.txt
