@@ -8,8 +8,11 @@ from dataset import data_split
 
 import torch.utils.tensorboard as tb
 from torch.utils.data import DataLoader, random_split
+import numpy as np
 
 from tqdm import tqdm
+import datetime
+import os
 
 import matplotlib.pyplot as plt
 
@@ -214,7 +217,7 @@ def build_transformer(vocab_size: int, sq_len: int, d_model: int, N: int, heads:
             encoder_block = EncoderBlock(encoder_self_attention_block, feed_forward_block, dropout=dropout)
             encoder_blocks.append(encoder_block)
         
-        #We build the encoder with N=6 encoder block
+        #We build the encoder
         encoder = Encoder(nn.ModuleList(encoder_blocks))
 
         #We build the transformer
@@ -230,14 +233,9 @@ def build_transformer(vocab_size: int, sq_len: int, d_model: int, N: int, heads:
 def train_model(config, train_dataloader, valid_dataloader):
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
     print(f"using device {device}")
-
-    #Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
     
     model = build_transformer(config['vocab_size'], config['sq_len'], config['d_model'], config['N'], config['heads'], config['dropout'], config['d_ff'])
-
-    #Tensorboard
-    writer = tb.SummaryWriter(config['exp_name'])
-
+    
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'], eps=1e-7)
     loss_function = nn.MSELoss()
 
@@ -253,12 +251,23 @@ def train_model(config, train_dataloader, valid_dataloader):
     counter = 0
     valid_loss = []
     train_loss = []
+    last_epoch = 0
+    interval=25
+    
+    ######
+    #Change 2p5M by data size used for training.
+    ######
+    current_time = "2p5M-" + datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
+    log_dir = os.path.join(config['exp_name'], current_time)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    writer = tb.SummaryWriter(log_dir=log_dir)
+    
     for epoch in range(n_epochs):
         model.train()
         
-        batch_iterator = tqdm(train_dataloader, desc=f"Training epoch {epoch:02d}")
+        batch_iterator = tqdm(train_dataloader, desc=f"Training epoch {epoch+1:02d}")
         running_loss_MSE=0
-        running_loss_MAE=0
         for batch in batch_iterator:
             sq, mfe, mask = batch
             sq, mfe, mask = sq.to(device), mfe.to(device), mask.to(device)
@@ -294,12 +303,20 @@ def train_model(config, train_dataloader, valid_dataloader):
         avg_valid_loss = running_loss / len(valid_dataloader)
         valid_loss.append(avg_valid_loss)
         
-        #Early stopping
+        last_epoch = epoch
         
+        if epoch % interval == 0:
+            for name, param in model.named_parameters():
+                writer.add_histogram(f'Parameters/{name}', param, epoch)
+                if param.grad is not None:
+                    writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
+            
+        
+        #Early stopping and checkpoint best model
         if avg_valid_loss < best_valid_loss:
             best_valid_loss = avg_valid_loss
             counter = 0
-            torch.save(model.state_dict(), '../model/best_model.pth')
+            torch.save(model.state_dict(), 'packages/model/best-model_checkpoint/best_model.pth')
         else:
             counter += 1
             
@@ -307,6 +324,7 @@ def train_model(config, train_dataloader, valid_dataloader):
             print(f"Stopped early at epoch {epoch+1}")
             break
             
+        #This is overall MSE loss. Since data is skewed, would be nice to get MSE by interval of sequences.
         print(f'Epoch {epoch+1}/{n_epochs}, MSE Train Loss: {avg_train_mse_loss}, MSE valid loss: {avg_valid_loss}')
         
     plt.figure(figsize=(8, 8))
@@ -329,6 +347,10 @@ def train_model(config, train_dataloader, valid_dataloader):
     plt.grid(True)
     
     writer.add_figure('Training and Validation Losses Over Epochs', plt.gcf())
+    
+    writer.add_text('Configuration', f"Last epoch: {last_epoch}, Learning Rate: {config['learning_rate']}, Batch Size: {config['batch_size']}, \
+                    dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['N']}, heads: {config['heads']}, \
+                    max_len: {config['max_len']}")
 
     writer.close()
 
@@ -337,7 +359,7 @@ def test_model(config, dataloader):
     print(f"using device {device}")
     
     model = build_transformer(config['vocab_size'], config['sq_len'], config['d_model'], config['N'], config['heads'], config['dropout'], config['d_ff'])
-    model.load_state_dict(torch.load('../model/best_model.pth'))
+    model.load_state_dict(torch.load('packages/model/best-model_checkpoint/best_model.pth'))
     
     model.eval()
     predictions = []

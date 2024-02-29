@@ -67,3 +67,6 @@ def data_split(data, config):
 
     return train_dataloader, val_dataloader, test_dataloader
 
+def createDataLoader(data, batch_size, shuffle=False):
+    return DataLoader(data, batch_size, shuffle)
+

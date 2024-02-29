@@ -1,18 +1,18 @@
 def get_config():
     return {
-        "batch_size": 128,
-        "num_epochs": 300,
-        "learning_rate": 1e-4,
-        "d_model": 256,
-        "N": 2,
-        "heads": 4,
+        "batch_size": 256,
+        "num_epochs": 25,
+        "learning_rate": 5e-5,
+        "d_model": 128,
+        "N": 4,
+        "heads": 8,
         "dropout": 0.1,
-        "d_ff": 1024,
+        "d_ff": 512,
         "vocab_size": 5,
-        "sq_len": 50,
-        "max_len":50,
+        "sq_len": 200,
+        "max_len":200,
         "model_folder": "weights",
         "model_filename": "transformer_model_",
         "preload": None,
-        "exp_name": "../model/runs/tmodel"
+        "exp_name": "packages/model/runs/tmodel"
     }
