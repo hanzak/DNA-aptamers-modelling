@@ -240,20 +240,18 @@ def train_model(config, train_dataloader, valid_dataloader):
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], amsgrad=True)
     loss_function = nn.MSELoss()
 
-    n_epochs = config['num_epochs']
-    
     #Eventually, we could try scheduling. right now, it seems a constant 1e-5 lr is good enough.
     #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=8, T_mult=1, eta_min=0)
 
     model = model.to(device)
 
-    early_stop = 10
+    early_stop = 15
     best_valid_loss = 1e9
     counter = 0
     valid_loss = []
     train_loss = []
     last_epoch = 0
-    interval=20
+    interval=15
     
     predicted_values_train = []
     actual_values_train = []
@@ -269,7 +267,19 @@ def train_model(config, train_dataloader, valid_dataloader):
     
     writer = tb.SummaryWriter(log_dir=log_dir)
     
-    for epoch in range(n_epochs):
+    n_epochs = config['num_epochs']
+    
+    checkpoint_path = f'packages/model/model_checkpoint/{config['prefix']}model_checkpoint.pth'
+    if os.path.exists(checkpoint_path):
+        try:
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1  
+        except FileNotFoundError:
+            print("No checkpoint found.")
+    
+    for epoch in range(start_epoch, n_epochs):
         model.train()
         
         batch_iterator = tqdm(train_dataloader, desc=f"Training epoch {epoch+1:02d}")
@@ -327,7 +337,11 @@ def train_model(config, train_dataloader, valid_dataloader):
         if mse_valid < best_valid_loss:
             best_valid_loss = mse_valid
             counter = 0
-            torch.save(model.state_dict(), 'packages/model/best-model_checkpoint/best_model.pth')
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+            }, f'packages/model/model_checkpoint/{config['prefix']}model_checkpoint.pth')
         else:
             counter += 1
             
@@ -345,44 +359,10 @@ def train_model(config, train_dataloader, valid_dataloader):
         actual_values_train.clear()
         predicted_values_valid.clear()
         actual_values_valid.clear()
-
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_loss, label='Training Loss', color='blue')
-    plt.plot(valid_loss, label='Validation Loss', color='orange')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Losses Over Epochs')
-    plt.legend()
-    plt.grid(True)
-    
-    writer.add_figure('Training and Validation Losses Over Epochs', plt.gcf())
-    
-    writer.add_text('Configuration', f"Last epoch: {last_epoch+1}, Learning Rate: {config['learning_rate']}, Batch Size: {config['batch_size']}, \
-                    dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['N']}, heads: {config['heads']}, \
-                    max_len: {config['max_len']}")
-    writer.close()
-    torch.save(model.state_dict(), 'packages/model/best_model.pth')
-    
-    
-#Test model with test data.
-def test_model(config, dataloader):
-    device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
-    print(f"using device {device}")
-    
-    model = build_transformer(config['vocab_size'], config['sq_len'], config['d_model'], config['N'], config['heads'], config['dropout'], config['d_ff'])
-    model.load_state_dict(torch.load('packages/model/best-model_checkpoint/best_model.pth'))
-    
+        
     model.eval()
     predicted_values_test = []
     actual_values_test = []
-
-    model.to(device)
-    
-    current_time = "TEST-2p5M-" + datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
-    log_dir = os.path.join(config['exp_name'], current_time)
-    os.makedirs(log_dir, exist_ok=True)
-    
-    writer = tb.SummaryWriter(log_dir=log_dir)
 
     with torch.no_grad():
         for batch in dataloader:
@@ -398,8 +378,23 @@ def test_model(config, dataloader):
     print(f'MSE: {mse}, MAE: {mae}')
     plot_predvsactual(writer, actual_values_test, predicted_values_test, 0, mse, "Test")
     
-    writer.close()
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_loss, label='Training Loss', color='blue')
+    plt.plot(valid_loss, label='Validation Loss', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Losses Over Epochs')
+    plt.legend()
+    plt.grid(True)
     
+    writer.add_figure('Training and Validation Losses Over Epochs', plt.gcf())
+    
+    writer.add_text('Configuration', f"Last epoch: {last_epoch+1}, Learning Rate: {config['learning_rate']}, Batch Size: {config['batch_size']}, \
+                    dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['N']}, heads: {config['heads']}, \
+                    max_len: {config['max_len']}")
+    writer.close()
+        
+    torch.save(model.state_dict(), f'packages/model/best_model/{current_time}best_model.pth')
     
 def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str):
         #Plot predicted vs actual for train data every 20 epoch

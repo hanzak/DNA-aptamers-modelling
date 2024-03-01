@@ -28,45 +28,23 @@ class DNASequenceDataset(Dataset):
         return padded_sequence, mfe_tensor, mask
 
 def data_split(data, config):
-    filtered_dataset = [(seq, mfe) for seq, mfe in data if mfe != 0]
-
-    dataset_size = len(filtered_dataset)
+    dataset_size = len(data)
 
     train_size = int(0.8 * dataset_size)
     val_size = int(0.1 * dataset_size)
     test_size = dataset_size - train_size - val_size
 
-    train_dataset, val_dataset, test_dataset = random_split(filtered_dataset, [train_size, val_size, test_size])
+    train_dataset, val_dataset, test_dataset = random_split(data, [train_size, val_size, test_size])
+
+    return train_dataset, val_dataset, test_dataset
+
+def loadData(data, config):
+    dna_sequences, mfe_values = zip(*data)
+
+    dataset = DNASequenceDataset(dna_sequences, mfe_values, config['max_len'])
+    data_loader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
     
-    dna_sequences, mfe_values = zip(*train_dataset)
-    #mfe_values_list = list(map(float, mfe_values))
-    
-    # Convert normalized values back to a tensor
-    #mfe_norm_tensor = torch.tensor(mfe_norm)
+    return data_loader
 
-    dataset = DNASequenceDataset(dna_sequences, mfe_values, config['max_len'])
-    train_dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
 
-    dna_sequences, mfe_values = zip(*val_dataset)
-    #mfe_values_list = list(map(float, mfe_values))
-
-    # Convert normalized values back to a tensor
-    #mfe_norm_tensor = torch.tensor(mfe_norm)
-
-    dataset = DNASequenceDataset(dna_sequences, mfe_values, config['max_len'])
-    val_dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
-
-    dna_sequences, mfe_values = zip(*test_dataset)
-    #mfe_values_list = list(map(float, mfe_values))
-
-    # Convert normalized values back to a tensor
-    #mfe_norm_tensor = torch.tensor(mfe_norm)    
-
-    dataset = DNASequenceDataset(dna_sequences, mfe_values, config['max_len'])
-    test_dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
-
-    return train_dataloader, val_dataloader, test_dataloader
-
-def createDataLoader(data, batch_size, shuffle=False):
-    return DataLoader(data, batch_size, shuffle)
 

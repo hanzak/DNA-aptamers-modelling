@@ -14,16 +14,10 @@ def check_file(file_path):
 if check_file(train_path) and check_file(valid_path) and check_file(test_path):
     with open(train_path, 'rb') as f:
         train = pickle.load(f)
-        train_dataset = train.dataset
-        train = dataset.createDataLoader(train_dataset, config.get_config()['batch_size'])
     with open(valid_path, 'rb') as f:
         valid = pickle.load(f)
-        valid_dataset = valid.dataset
-        valid = dataset.createDataLoader(valid_dataset, config.get_config()['batch_size'])
     with open(test_path, 'rb') as f:
         test = pickle.load(f)
-        test_dataset = test.dataset
-        test = dataset.createDataLoader(test_dataset, config.get_config()['batch_size'])
 else:
     if check_file("data_2p5M.pkl") == False:
         raise FileNotFoundError("data_2p5M.pkl doesn't exist or is empty")
@@ -37,6 +31,10 @@ else:
         pickle.dump(valid, f)
     with open(test_path, 'wb') as f:
         pickle.dump(test, f)
+        
+train_dataloader = dataset.loadData(train, config.get_config())
+valid_dataloader = dataset.loadData(valid, config.get_config())
+test_dataloader = dataset.loadData(test, config.get_config())
 
-model.train_model(config.get_config(), train, valid)
-model.test_model(config.get_config(), test)
+model.train_model(config.get_config(), train_dataloader, valid_dataloader)
+model.test_model(config.get_config(), test_dataloader)
