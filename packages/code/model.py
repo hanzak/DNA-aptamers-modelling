@@ -15,6 +15,7 @@ import datetime
 import os
 
 import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 
 """
@@ -236,7 +237,7 @@ def train_model(config, train_dataloader, valid_dataloader):
     
     model = build_transformer(config['vocab_size'], config['sq_len'], config['d_model'], config['N'], config['heads'], config['dropout'], config['d_ff'])
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'], eps=1e-7)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], amsgrad=True)
     loss_function = nn.MSELoss()
 
     n_epochs = config['num_epochs']
@@ -246,18 +247,23 @@ def train_model(config, train_dataloader, valid_dataloader):
 
     model = model.to(device)
 
-    early_stop = 20
+    early_stop = 10
     best_valid_loss = 1e9
     counter = 0
     valid_loss = []
     train_loss = []
     last_epoch = 0
-    interval=25
+    interval=20
+    
+    predicted_values_train = []
+    actual_values_train = []
+    predicted_values_valid = []
+    actual_values_valid = []
     
     ######
     #Change 2p5M by data size used for training.
     ######
-    current_time = "2p5M-" + datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
+    current_time = "TV-2p5M-" + datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
     log_dir = os.path.join(config['exp_name'], current_time)
     os.makedirs(log_dir, exist_ok=True)
     
@@ -278,30 +284,34 @@ def train_model(config, train_dataloader, valid_dataloader):
             loss.backward()
             optimizer.step()
             #scheduler.step()
-            running_loss_MSE += loss.item()
-            avg_train_mse_loss = running_loss_MSE/len(train_dataloader)
+            #running_loss_MSE += loss.item()
+            #avg_train_mse_loss = running_loss_MSE/len(train_dataloader)
+            predicted_values_train.extend(outputs.detach().cpu().numpy())
+            actual_values_train.extend(mfe.detach().cpu().numpy())
 
-        train_loss.append(avg_train_mse_loss)   
+        mse_train = mean_squared_error(actual_values_train, predicted_values_train)
+        train_loss.append(mse_train)   
         
         #########################
         #Validation after 1 epoch
         #########################
         model.eval()
-        predicted_values = []
-        actual_values = []
-        loss_function = nn.MSELoss()
-        running_loss = 0
+        #running_loss = 0
+        batch_iterator_valid = tqdm(valid_dataloader, desc=f"Validating epoch {epoch+1:02d}")
         with torch.no_grad():
-            for batch in valid_dataloader:
+            for batch in batch_iterator_valid:
                 sq, mfe, mask = batch
                 sq, mfe, mask = sq.to(device), mfe.to(device), mask.to(device)
                 outputs = model(sq, mask)
-                loss = loss_function(outputs, mfe)
-                running_loss += loss.item()
-                predicted_values.extend(outputs.cpu().numpy())
-                actual_values.extend(mfe.cpu().numpy())
-        avg_valid_loss = running_loss / len(valid_dataloader)
-        valid_loss.append(avg_valid_loss)
+                #loss = loss_function(outputs, mfe)
+                #running_loss += loss.item()
+                predicted_values_valid.extend(outputs.cpu().numpy())
+                actual_values_valid.extend(mfe.cpu().numpy())
+        #avg_valid_loss = running_loss / len(valid_dataloader)
+        #valid_loss.append(avg_valid_loss)
+        
+        mse_valid = mean_squared_error(actual_values_valid, predicted_values_valid)
+        valid_loss.append(mse_valid)
         
         last_epoch = epoch
         
@@ -310,11 +320,12 @@ def train_model(config, train_dataloader, valid_dataloader):
                 writer.add_histogram(f'Parameters/{name}', param, epoch)
                 if param.grad is not None:
                     writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
-            
-        
+            plot_predvsactual(writer, actual_values_train, predicted_values_train, epoch, mse_train, "Train")
+            plot_predvsactual(writer, actual_values_valid, predicted_values_valid, epoch, mse_valid, "Valid")
+                 
         #Early stopping and checkpoint best model
-        if avg_valid_loss < best_valid_loss:
-            best_valid_loss = avg_valid_loss
+        if mse_valid < best_valid_loss:
+            best_valid_loss = mse_valid
             counter = 0
             torch.save(model.state_dict(), 'packages/model/best-model_checkpoint/best_model.pth')
         else:
@@ -322,21 +333,19 @@ def train_model(config, train_dataloader, valid_dataloader):
             
         if counter >= early_stop:
             print(f"Stopped early at epoch {epoch+1}")
+            plot_predvsactual(writer, actual_values_train, predicted_values_train, epoch, mse_train, "Train")
+            plot_predvsactual(writer, actual_values_valid, predicted_values_valid, epoch, mse_valid, "Valid")
             break
             
         #This is overall MSE loss. Since data is skewed, would be nice to get MSE by interval of sequences.
-        print(f'Epoch {epoch+1}/{n_epochs}, MSE Train Loss: {avg_train_mse_loss}, MSE valid loss: {avg_valid_loss}')
+        print(f'Epoch {epoch+1}/{n_epochs}, MSE Train Loss: {mse_train}, MSE valid loss: {mse_valid}')
         
-    plt.figure(figsize=(8, 8))
-    plt.scatter(actual_values, predicted_values, alpha=0.5)
-    plt.xlabel('Actual MFE')
-    plt.ylabel('Predicted MFE')
-    plt.title('Predicted vs Actual MFE')
-    plt.grid(True)
+        #clearing to solve memory issue.
+        predicted_values_train.clear()
+        actual_values_train.clear()
+        predicted_values_valid.clear()
+        actual_values_valid.clear()
 
-    writer.add_figure('Predicted vs Actual MFE', plt.gcf())
-    writer.add_scalar("Loss/valid", avg_valid_loss, len(valid_dataloader))
-    
     plt.figure(figsize=(10, 5))
     plt.plot(train_loss, label='Training Loss', color='blue')
     plt.plot(valid_loss, label='Validation Loss', color='orange')
@@ -348,12 +357,14 @@ def train_model(config, train_dataloader, valid_dataloader):
     
     writer.add_figure('Training and Validation Losses Over Epochs', plt.gcf())
     
-    writer.add_text('Configuration', f"Last epoch: {last_epoch}, Learning Rate: {config['learning_rate']}, Batch Size: {config['batch_size']}, \
+    writer.add_text('Configuration', f"Last epoch: {last_epoch+1}, Learning Rate: {config['learning_rate']}, Batch Size: {config['batch_size']}, \
                     dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['N']}, heads: {config['heads']}, \
                     max_len: {config['max_len']}")
-
     writer.close()
-
+    torch.save(model.state_dict(), 'packages/model/best_model.pth')
+    
+    
+#Test model with test data.
 def test_model(config, dataloader):
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
     print(f"using device {device}")
@@ -362,22 +373,43 @@ def test_model(config, dataloader):
     model.load_state_dict(torch.load('packages/model/best-model_checkpoint/best_model.pth'))
     
     model.eval()
-    predictions = []
-    actual_values = []
+    predicted_values_test = []
+    actual_values_test = []
 
     model.to(device)
+    
+    current_time = "TEST-2p5M-" + datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
+    log_dir = os.path.join(config['exp_name'], current_time)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    writer = tb.SummaryWriter(log_dir=log_dir)
 
     with torch.no_grad():
         for batch in dataloader:
             sq, mfe, mask = batch
             sq, mfe, mask = sq.to(device), mfe.to(device), mask.to(device)
             outputs = model(sq, mask)
-            predictions.extend(outputs.cpu().numpy())
-            actual_values.extend(mfe.cpu().numpy())
+            predicted_values_test.extend(outputs.cpu().numpy())
+            actual_values_test.extend(mfe.cpu().numpy())
 
-    from sklearn.metrics import mean_squared_error, mean_absolute_error
-
-    mse = mean_squared_error(actual_values, predictions)
-    mae = mean_absolute_error(actual_values, predictions)
+    mse = mean_squared_error(actual_values_test, predicted_values_test)
+    mae = mean_absolute_error(actual_values_test, predicted_values_test)
 
     print(f'MSE: {mse}, MAE: {mae}')
+    plot_predvsactual(writer, actual_values_test, predicted_values_test, 0, mse, "Test")
+    
+    writer.close()
+    
+    
+def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str):
+        #Plot predicted vs actual for train data every 20 epoch
+        plt.figure(figsize=(8, 8))
+        plt.scatter(actual, pred, alpha=0.5)
+        plt.xlabel('Actual MFE')
+        plt.ylabel('Predicted MFE')
+        plt.title('Predicted vs Actual MFE')
+        plt.grid(True)
+
+        writer.add_figure(f'{data_origin} data: Predicted vs Actual MFE after {epoch} epochs', plt.gcf())
+        writer.add_scalar("Loss/train", mse, epoch)
+            
