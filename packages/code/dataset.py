@@ -23,7 +23,7 @@ class DNASequenceDataset(Dataset):
         mfe_tensor = torch.tensor([mfe], dtype=torch.float)
         
         padded_sequence = F.pad(sequence_tensor, (0, self.max_len - len(sequence_tensor)), value=self.pad_value)
-        mask = padded_sequence != self.pad_value
+        mask = (padded_sequence != self.pad_value)
         
         return padded_sequence, mfe_tensor, mask
 
@@ -38,13 +38,11 @@ def data_split(data, config):
 
     return train_dataset, val_dataset, test_dataset
 
-def loadData(data, config):
+def process(data, config):
     dna_sequences, mfe_values = zip(*data)
 
     dataset = DNASequenceDataset(dna_sequences, mfe_values, config['max_len'])
     data_loader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
     
     return data_loader
-
-
 
