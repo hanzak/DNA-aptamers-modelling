@@ -1,8 +1,9 @@
-import model
+import transformer
 import config
 import dataset 
 import pickle
 import os
+from BucketDataLoader import BucketDataLoader
 
 train_path = 'packages/data/train_2p5M.pkl'
 valid_path = 'packages/data/valid_2p5M.pkl'
@@ -32,9 +33,8 @@ else:
     with open(test_path, 'wb') as f:
         pickle.dump(test, f)
         
-train_dataloader = dataset.loadData(train, config.get_config())
-valid_dataloader = dataset.loadData(valid, config.get_config())
-test_dataloader = dataset.loadData(test, config.get_config())
+train_dataloader = BucketDataLoader(train, config.get_config())
+valid_dataloader = BucketDataLoader(valid, config.get_config())
+test_dataloader = BucketDataLoader(test, config.get_config())
 
-model.train_model(config.get_config(), train_dataloader, valid_dataloader)
-model.test_model(config.get_config(), test_dataloader)
+transformer.train_model(config.get_config(), train_dataloader, valid_dataloader, test_dataloader)
