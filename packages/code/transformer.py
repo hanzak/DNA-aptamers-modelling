@@ -15,7 +15,7 @@ import datetime
 import os
 
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, log_loss
 
 
 class PositionalEncoding(nn.Module):
@@ -57,9 +57,11 @@ class Transformer(nn.Module):
     def __init__(self,config):
         super(Transformer,self).__init__()
         self.d_model = config["d_model"]
-        self.vocab_size = config["vocab_size"]
+        self.src_vocab_size = config["src_vocab_size"]
+        self.target_vocab_size = config["target_vocab_size"]
         self.heads = config["heads"]
-        self.N = config["N"]
+        self.layers_encoder = config["layers_encoder"]
+        self.layers_decoder = config["layers_decoder"]
         self.d_ff = config["d_ff"]
         self.dropout = config["dropout"]
         self.max_len = config["max_len"]
@@ -83,21 +85,40 @@ class Transformer(nn.Module):
             batch_first = True
         )
         
-        self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, self.N)
+        self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, self.layers_encoder)
         
-        self.out = nn.Linear(self.d_model, 1)
+        self.decoder_layer = nn.TransformerDecoderLayer(
+            d_model=self.d_model,
+            nhead=self.heads,
+            dim_feedforward=self.d_ff,
+            dropout=self.dropout, 
+            batch_first=True
+        )
+        
+        self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, self.layers_decoder)
+        
+        self.mfe_out = nn.Linear(self.d_model, 1)
+        self.decod_out = nn.Linear(self.d_model, self.target_vocab_size)
         
         self.init_weights()
         
         self.to(self.device)
                                      
-    def forward(self, x, mask):
-        x = self.embedding(x) * math.sqrt(self.d_model)
-        x = self.positional_encoder(x)
-        x = self.transformer_encoder(x, src_key_padding_mask=mask)
-        x = torch.mean(x,dim=1)
-        x = self.out(x)
-        return x
+    def forward(self, src, tgt, src_mask):
+        src = self.embedding(src) * math.sqrt(self.d_model)
+        src = self.positional_encoder(src)
+        encoder_output = self.transformer_encoder(src, src_key_padding_mask=src_mask)
+
+        tgt = self.embedding(tgt) * math.sqrt(self.d_model)
+        tgt = self.positional_encoder(tgt)
+        decoder_output = self.transformer_decoder(tgt, encoder_output)
+
+        mfe = torch.mean(encoder_output, dim=1)
+        mfe = self.mfe_out(mfe)
+
+        decoded = self.decoder_out(decoder_output)
+
+        return mfe, decoded
     
     def init_weights(self):
         nn.init.xavier_uniform_(self.embedding.weight)
@@ -116,41 +137,51 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     ################
     #Setting up variables
     ################
-    early_stop = 10
+    early_stop = 5
     best_valid_loss = 1e9
     counter = 0
-    train_loss = np.zeros(len(train_dataloader.dataset))
-    valid_loss = np.zeros(len(valid_dataloader.dataset))
+    train_loss_mfe = []
+    train_loss_ce = []
+    valid_loss_mfe = []
+    valid_loss_ce = []
     last_epoch = 0
+    best_epoch = 0
     interval=10
     start_epoch = 0
     n_epochs = config['num_epochs']
     
     predicted_values_train = np.zeros(len(train_dataloader.dataset))
     actual_values_train = np.zeros(len(train_dataloader.dataset))
+    predicted_structures_train = np.zeros(len(train_dataloader.dataset))
+    actual_structures_train = np.zeros(len(train_dataloader.dataset))
+    
     predicted_values_valid = np.zeros(len(valid_dataloader.dataset))
     actual_values_valid = np.zeros(len(valid_dataloader.dataset))
+    predicted_structures_valid = np.zeros(len(valid_dataloader.dataset))
+    actual_structures_valid= np.zeros(len(valid_dataloader.dataset))
     
     ################
     #Model, Optim and Loss
     ################
     model = Transformer(config)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], amsgrad=True)
-    loss_function = nn.MSELoss()
-    #Eventually, we could try scheduling. right now, it seems a constant 1e-5 lr is good enough.
-    #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=8, T_mult=1, eta_min=0)
+    loss_function_mfe = nn.MSELoss()
+    loss_function_structure = nn.CrossEntropyLoss()
+    #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=0)
+    
     
     ################
     #Tensorboard output folder and init
     ################
-    current_time = "TV-2p5M-" + datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
-    log_dir = os.path.join(config['exp_name'], current_time)
+    foldername = "run_2p5M_" + datetime.datetime.now().strftime("%d-%m-%Y_%H%M%S") + "_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size'])
+    log_dir = os.path.join(config['exp_name'], foldername)
     os.makedirs(log_dir, exist_ok=True)
     writer = tb.SummaryWriter(log_dir=log_dir)
 
     ################
     #Check for existing checkpoint
     ################
+    """
     checkpoint_path = f"packages/model/model_checkpoint/{config['prefix']}model_checkpoint.pth"
     if os.path.exists(checkpoint_path):
         try:
@@ -162,6 +193,7 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
             print("No checkpoint found.")   
     else:
         print("No checkpoint found. Continue from scratch.")   
+    """
         
     ################
     #Loop for EPOCHS.
@@ -176,24 +208,36 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         #iterator used in an attempt to save memory. using nparray instead of lists.
         it=0
         for batch in batch_iterator:
-            sq, mfe, mask = batch
-            sq, mfe, mask = sq.to(device), mfe.to(device), mask.to(device)
+            sq, mfe, structure, mask = batch
+            sq, mfe, structure, mask = sq.to(device), mfe.to(device), structure.to(device), mask.to(device)
                         
             optimizer.zero_grad()
-            outputs = model(sq, mask)
-            loss = loss_function(outputs, mfe)
-
-            loss.backward()
+            mfes, structures = model(sq, mask)
+            loss_mfe = loss_function_mfe(mfes, mfe)
+            loss_ce = loss_function_structure(structures, structure)
+            
+            #Minimizing total loss
+            total_loss = loss_mfe + loss_ce
+            
+            total_loss.backward()
             optimizer.step()
             #scheduler.step()
-            pred = outputs.detach().cpu().numpy()
+            pred = mfes.detach().cpu().numpy()
             act = mfe.detach().cpu().numpy()
+            pred_structures = structures.detach().cpu().numpy()
+            act_structures = structure.detach().cpu().numpy()
+            
             predicted_values_train[it*len(pred):(it+1)*len(pred)] = pred.flatten()
             actual_values_train[it*len(act):(it+1)*len(act)] = act.flatten()
+            
+            predicted_structures_train[it*len(pred_structures):(it+1)*len(pred_structures)] = pred_structures
+            actual_structures_train[it*len(act_structures):(it+1)*len(act_structures)] = act_structures
             it+=1
 
         mse_train = mean_squared_error(actual_values_train, predicted_values_train)
-        train_loss[epoch] = mse_train
+        ce_train = log_loss(actual_structures_train, predicted_structures_train)
+        train_loss_mse.append(mse_train)
+        train_loss_ce.append(ce_train)
         
         #########################
         #VALIDATION PER EPOCH
@@ -205,21 +249,35 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         it=0
         with torch.no_grad():
             for batch in batch_iterator_valid:
-                sq, mfe, mask = batch
-                sq, mask = sq.to(device), mask.to(device)
+                sq, mfe, structure, mask = batch
+                sq, structure, mask = sq.to(device), structure.to(device), mask.to(device)
                 
-                outputs = model(sq, mask)
-                #loss = loss_function(outputs, mfe)
+                mfes, structures = model(sq, mask)
+                #loss = loss_function_mfe(outputs, mfe)
                 #running_loss += loss.item()
-                pred = outputs.detach().cpu().numpy()
+                pred = mfes.detach().cpu().numpy()
                 act = mfe.detach().cpu().numpy()
+                pred_structures = structures.detach().cpu().numpy()
+                act_structures = structure.detach().cpu().numpy()
+                
                 predicted_values_valid[it*len(pred):(it+1)*len(pred)] = pred.flatten()
                 actual_values_valid[it*len(act):(it+1)*len(act)] = act.flatten()
                 
+                predicted_structures_valid[it*len(pred_structures):(it+1)*len(pred_structures)] = pred_structures
+                actual_structures_valid[it*len(act_structures):(it+1)*len(act_structures)] = act_structures 
                 it+=1
         
         mse_valid = mean_squared_error(actual_values_valid, predicted_values_valid)
-        valid_loss[epoch] = mse_valid
+        ce_valid = log_loss(actual_structures_valid, predicted_structures_valid)
+        valid_loss_mse.append(mse_valid)
+        valid_loss_ce.append(ce_valid)
+        
+        
+        
+        writer.add_scalar('MSE-Loss/Train', mse_train, epoch+1)
+        writer.add_scalar('MSE-Loss/Valid', mse_valid, epoch+1)
+        writer.add_scalar('CE-Loss/Train', ce_train, epoch+1)
+        writer.add_scalar('CE-Loss/Valid', ce_valid, epoch+1)
         
         ################
         #TRACKING per interval.
@@ -238,6 +296,7 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         #EARLY STOP AND CHECKPOINT
         ################ 
         if mse_valid < best_valid_loss:
+            best_epoch = epoch
             best_valid_loss = mse_valid
             counter = 0
             torch.save({
@@ -258,54 +317,80 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         ################
         #Output LOSS for visualization in terminal
         ################ 
-        print(f'Epoch {epoch+1}/{n_epochs}, MSE Train Loss: {mse_train}, MSE valid loss: {mse_valid}')
+        print(f'Epoch {epoch+1}/{n_epochs}, MSE Train Loss: {mse_train}, CE Train Loss: {ce_train}, MSE valid loss: {mse_valid}, CE valid loss: {ce_valid}')
         
-        
+ 
+    ################
+    #TRACKING.
+    ################ 
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_loss_mse, label='Training Loss', color='blue')
+    plt.plot(valid_loss_mse, label='Validation Loss', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('MSE Loss')
+    plt.title('MSE Training and Validation Losses Over Epochs')
+    plt.legend()
+    plt.grid(True)
+    
+    writer.add_figure('MSE Training and Validation Losses Over Epochs', plt.gcf())
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_loss_ce, label='Training Loss', color='blue')
+    plt.plot(valid_loss_ce, label='Validation Loss', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('CE Loss')
+    plt.title('CE Training and Validation Losses Over Epochs')
+    plt.legend()
+    plt.grid(True)
+    
+    writer.add_figure('CE Training and Validation Losses Over Epochs', plt.gcf())
+    
+    #scheduler_name = scheduler.__class__.__name__
+    #scheduler_params = scheduler.state_dict()
+    #scheduler_info = f"{scheduler_name} with params: {scheduler_params}"
+    
+    writer.add_text('Configuration', f"Last epoch: {last_epoch+1}, Best epoch: {best_epoch+1}, Learning Rate: {config['learning_rate']}, Scheduler: None, Batch Size: {config['batch_size']}, \
+                    dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['layers_encoder']}, heads: {config['heads']}, \
+                    max_len: {config['max_len']}")
+    
+            
     ################
     #TEST LOOP
     ################     
     model.eval()
-    predicted_values_test = np.array(len(test_dataloader.dataset))
-    actual_values_test = np.array(len(test_dataloader.dataset))
+    predicted_values_test = np.zeros(len(test_dataloader.dataset))
+    actual_values_test = np.zeros(len(test_dataloader.dataset))
+    predicted_structures_test = np.zeros(len(test_dataloader.dataset))
+    actual_structures_test = np.zeros(len(test_dataloader.dataset))
 
     it=0
     with torch.no_grad():
         for batch in test_dataloader:
-            sq, mfe, mask = batch
-            sq, mfe, mask = sq.to(device), mask.to(device)
+            sq, mfe, structure, mask = batch
+            sq, structure, mask = sq.to(device), structure.to(device), mask.to(device)
             
-            outputs = model(sq, mask)
-            pred = outputs.detach().cpu().numpy()
+            mfes, structures = model(sq, mask)
+            pred = mfes.detach().cpu().numpy()
             act = mfe.detach().cpu().numpy()
+            pred_structures = structures.detach().cpu().numpy()
+            act_structures = structure.detach().cpu().numpy()
+                
             predicted_values_test[it*len(pred):(it+1)*len(pred)] = pred.flatten()
             actual_values_test[it*len(act):(it+1)*len(act)] = act.flatten()
-            
+                
+            predicted_structures_test[it*len(pred_structures):(it+1)*len(pred_structures)] = pred_structures
+            actual_structures_test[it*len(act_structures):(it+1)*len(act_structures)] = act_structures 
             it+=1
-            
-    mse = mean_squared_error(actual_values_test, predicted_values_test)
-    mae = mean_absolute_error(actual_values_test, predicted_values_test)
-    print(f'MSE: {mse}, MAE: {mae}')
+        
+    mse_test = mean_squared_error(actual_values_test, predicted_values_test)
+    ce_test = log_loss(actual_structures_test, predicted_structures_test)
+    print(f'MSE: {mse_test}, CE: {ce_test}')
+        
+    plot_predvsactual(writer, actual_values_test, predicted_values_test, 0, mse_test, "Test")
     
-    
-    ################
-    #TRACKING.
-    ################ 
-    plot_predvsactual(writer, actual_values_test, predicted_values_test, 0, mse, "Test")
-    
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_loss, label='Training Loss', color='blue')
-    plt.plot(valid_loss, label='Validation Loss', color='orange')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Losses Over Epochs')
-    plt.legend()
-    plt.grid(True)
-    
-    writer.add_figure('Training and Validation Losses Over Epochs', plt.gcf())
-    
-    writer.add_text('Configuration', f"Last epoch: {last_epoch+1}, Learning Rate: {config['learning_rate']}, Batch Size: {config['batch_size']}, \
-                    dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['N']}, heads: {config['heads']}, \
-                    max_len: {config['max_len']}")
+    ###
+    #Closing writer
+    ###
     writer.close()
         
     ################
@@ -313,6 +398,11 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     ################     
     torch.save(model.state_dict(), f"packages/model/best_model/{current_time}best_model.pth")
     
+    ################
+    #Hyperparam tune based on minimizing sum of both losses.
+    ################  
+    return mse_valid + ce_valid
+        
 def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str):
         #Plot predicted vs actual for train data every 20 epoch
         plt.figure(figsize=(8, 8))
@@ -321,7 +411,9 @@ def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str):
         plt.ylabel('Predicted MFE')
         plt.title('Predicted vs Actual MFE')
         plt.grid(True)
+        
+        if data_origin != "Test":
+            plt.text(x=0.05, y=0.95, s=f'Epoch: {epoch}', transform=plt.gca().transAxes, fontsize=12, ha='left', va='top')
+        plt.text(x=0.05, y=0.85, s=f'MSE: {mse:.4f}', transform=plt.gca().transAxes, fontsize=12, ha='left', va='top')
 
-        writer.add_figure(f'{data_origin} data: Predicted vs Actual MFE after {epoch} epochs', plt.gcf())
-        writer.add_scalar("Loss/train", mse, epoch)
-            
+        writer.add_figure(f'{data_origin} data: Predicted vs Actual MFE', plt.gcf())            

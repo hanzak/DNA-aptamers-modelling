@@ -27,7 +27,7 @@ class DNASequenceDataset(Dataset):
         
         return padded_sequence, mfe_tensor, mask
 
-def data_split(data, config):
+def data_split(data):
     dataset_size = len(data)
 
     train_size = int(0.8 * dataset_size)
