@@ -13,6 +13,7 @@ dna-env/
 # Data files
 *.csv
 *.xlsx
+.ipynb_checkpoints
 
 # Model files
 *.model
