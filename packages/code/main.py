@@ -6,13 +6,13 @@ import os
 from BucketDataLoader import BucketDataLoader
 import numpy as np
 
-train_path_mfe = 'packages/data/train_2p5M.pkl'
-valid_path_mfe = 'packages/data/valid_2p5M.pkl'
-test_path_mfe = 'packages/data/test_2p5M.pkl'
+train_path_mfe = 'data/splits/train_2p5M.pkl'
+valid_path_mfe = 'data/splits/valid_2p5M.pkl'
+test_path_mfe = 'data/splits/test_2p5M.pkl'
 
-train_path_struct = 'packages/data/train_2p5M_struct.pkl'
-valid_path_struct = 'packages/data/valid_2p5M_struct.pkl'
-test_path_struct = 'packages/data/test_2p5M_struct.pkl'
+train_path_struct = 'data/splits/train_2p5M_struct.pkl'
+valid_path_struct = 'data/splits/valid_2p5M_struct.pkl'
+test_path_struct = 'data/splits/test_2p5M_struct.pkl'
 
 config_ = config.get_config()
 
@@ -54,15 +54,15 @@ def get_data_structures():
         with open(test_path_struct, 'rb') as f:
             test = pickle.load(f)
     else:
-        if check_file("data_2p5M_struct.pkl") == False:
+        if check_file("data/data_2p5M_struct.pkl") == False:
             raise FileNotFoundError("data_2p5M_struct.pkl doesn't exist or is empty")
-        with open('data_2p5M_struct.pkl', 'rb') as file:
+        with open('data/data_2p5M_struct.pkl', 'rb') as file:
             data_for_transformer = pickle.load(file)
-        print(len(data_for_transformer))
-        mfes = [mfe for _, mfe, _ in data_for_transformer]
-        standardized_mfes = dataset.standardize_mfe(mfes)
-        standardized_data = [(sequence, standardized_mfe, structure) for (sequence, _, structure), standardized_mfe in zip(data_for_transformer, standardized_mfes)]
-        train, valid, test = dataset.data_split(standardized_data)
+        #print(len(data_for_transformer))
+        #mfes = [mfe for _, mfe, _ in data_for_transformer]
+        #standardized_mfes = dataset.standardize_mfe(mfes)
+        #standardized_data = [(sequence, standardized_mfe, structure) for (sequence, _, structure), standardized_mfe in zip(data_for_transformer, standardized_mfes)]
+        train, valid, test = dataset.data_split(data_for_transformer)
 
         with open(train_path_struct, 'wb') as f:
             pickle.dump(train, f)
@@ -97,14 +97,14 @@ def objective_function(hyperparameters):
 
 def hyperparam_tune(objective_function):
     hyperparameter_space = [
-        Integer(1, 4, name='layers_encoder'),  
-        Integer(1, 4, name='layers_decoder'),
-        Categorical([2, 4, 8], name='heads'),  
-        Categorical([64,128, 256], name='d_model'),  
-        Categorical([128, 256, 512], name='d_ff'),  
-        Real(1e-6, 1e-2, "log-uniform", name='learning_rate'),  
-        Categorical([128, 256, 512], name='batch_size'),
-        Categorical([0.1, 0.2, 0.3], name='dropout')
+        Integer(1, 2, name='layers_encoder'),  
+        Integer(1, 2, name='layers_decoder'),
+        Categorical([2, 4], name='heads'),  
+        Categorical([128, 256], name='d_model'),  
+        Categorical([256, 512], name='d_ff'),  
+        Categorical([1e-6, 1e-5, 1e-4, 1e-3], name='learning_rate'),  
+        Categorical([256, 512], name='batch_size'),
+        Categorical([0.1, 0.15, 0.2], name='dropout')
     ]
 
     results = gp_minimize(

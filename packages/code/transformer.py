@@ -53,13 +53,13 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 class CustomLoss(nn.Module):
-    def __init__(self, base_loss, penalty_weight):
+    def __init__(self, penalty_weight, ce_weights):
         super(CustomLoss, self).__init__()
-        self.base_loss = base_loss
         self.penalty_weight = penalty_weight
+        self.ce_weights = ce_weights  
 
     def forward(self, logits, targets, structures):
-        ce_loss = self.base_loss(logits, targets)
+        ce_loss = self.weighted_cross_entropy_loss(logits, targets, self.ce_weights)
 
         penalty = self.compute_penalty(structures)
 
@@ -75,6 +75,18 @@ class CustomLoss(nn.Module):
         penalty = imbalance.double().mean()
 
         return penalty
+    
+    ###
+    ###CHATGTPd
+    ###
+    def weighted_cross_entropy_loss(self, logits, targets, weights):
+        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+        targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=logits.size(-1))
+        
+        weighted_log_probs = log_probs * targets_one_hot * weights.unsqueeze(0)
+        ce_loss = -weighted_log_probs.sum(dim=-1).mean()
+        
+        return ce_loss
     
 
 class Transformer(nn.Module):
@@ -194,8 +206,9 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     model = Transformer(config)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
     loss_function_mfe = nn.MSELoss()
-    base_loss = nn.CrossEntropyLoss()
-    custom_loss = CustomLoss(base_loss, penalty_weight=0.5)
+    ce_weights = torch.tensor([0.0, 100.0, 100.0, 1.0])
+    ce_weights = ce_weights.to(device)
+    custom_loss = CustomLoss(2, ce_weights)
     #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=0)
     
     
