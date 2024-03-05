@@ -10,17 +10,17 @@ train_path_mfe = 'data/splits/train_250k.pkl'
 valid_path_mfe = 'data/splits/valid_250k.pkl'
 test_path_mfe = 'data/splits/test_250k.pkl'
 
-train_path_struct = 'data/splits/train_250k_struct.pkl'
-valid_path_struct = 'data/splits/valid_250k_struct.pkl'
-test_path_struct = 'data/splits/test_250k_struct.pkl'
+train_path_struct = 'data/splits/train_5M_struct.pkl'
+valid_path_struct = 'data/splits/valid_5M_struct.pkl'
+test_path_struct = 'data/splits/test_5M_struct.pkl'
 
 config_ = config.get_config()
 
 def check_file(file_path):
     return os.path.isfile(file_path) and os.stat(file_path).st_size > 0
 
-"""
-def get_data_mfe():
+
+def get_data_mfes():
     if check_file(train_path_mfe) and check_file(valid_path_mfe) and check_file(test_path_mfe):
         with open(train_path_mfe, 'rb') as f:
             train = pickle.load(f)
@@ -29,9 +29,9 @@ def get_data_mfe():
         with open(test_path_mfe, 'rb') as f:
             test = pickle.load(f)
     else:
-        if check_file("data_2p5M.pkl") == False:
-            raise FileNotFoundError("data_2p5M.pkl doesn't exist or is empty")
-        with open('data_2p5M.pkl', 'rb') as file:
+        if check_file("data/data_250k.pkl") == False:
+            raise FileNotFoundError("data_5M.pkl doesn't exist or is empty")
+        with open('data/data_250k.pkl', 'rb') as file:
             data_for_transformer = pickle.load(file)
         train, valid, test = dataset.data_split(data_for_transformer)
 
@@ -43,7 +43,7 @@ def get_data_mfe():
             pickle.dump(test, f) 
             
     return train, valid, test
-"""
+
 
 def get_data_structures():
     if check_file(train_path_struct) and check_file(valid_path_struct) and check_file(test_path_struct):
@@ -54,9 +54,9 @@ def get_data_structures():
         with open(test_path_struct, 'rb') as f:
             test = pickle.load(f)
     else:
-        if check_file("data/data_250k_struct.pkl") == False:
+        if check_file("data/data_5M_struct.pkl") == False:
             raise FileNotFoundError("data_250k_struct.pkl doesn't exist or is empty")
-        with open('data/data_250k_struct.pkl', 'rb') as file:
+        with open('data/data_5M_struct.pkl', 'rb') as file:
             data_for_transformer = pickle.load(file)
         train, valid, test = dataset.data_split(data_for_transformer)
 
@@ -121,7 +121,8 @@ def hyperparam_tune(objective_function):
         json.dump(results_dict, f, indent=4)
         
 
-train, valid, test = get_data_structures()
+#get_data_structures()
+get_data_mfes()
 #train_dataloader = BucketDataLoader(train, config_)
 #valid_dataloader = BucketDataLoader(valid, config_)
 #test_dataloader = BucketDataLoader(test, config_)
