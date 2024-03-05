@@ -3,10 +3,10 @@ def get_config():
     return {
         "batch_size": 256,
         "num_epochs": 200,
-        "learning_rate": 1e-5,
+        "learning_rate": 1e-4,
         "d_model": 128,
-        "layers_encoder": 3,
-        "layers_decoder": 3,
+        "layers_encoder": 2,
+        "layers_decoder": 2,
         "heads": 4,
         "dropout": 0.11,
         "d_ff": 256,
