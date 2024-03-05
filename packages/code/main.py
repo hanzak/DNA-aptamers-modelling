@@ -6,13 +6,13 @@ import os
 from BucketDataLoader import BucketDataLoader
 import numpy as np
 
-train_path_mfe = 'data/splits/train_2p5M.pkl'
-valid_path_mfe = 'data/splits/valid_2p5M.pkl'
-test_path_mfe = 'data/splits/test_2p5M.pkl'
+train_path_mfe = 'data/splits/train_250k.pkl'
+valid_path_mfe = 'data/splits/valid_250k.pkl'
+test_path_mfe = 'data/splits/test_250k.pkl'
 
-train_path_struct = 'data/splits/train_2p5M_struct.pkl'
-valid_path_struct = 'data/splits/valid_2p5M_struct.pkl'
-test_path_struct = 'data/splits/test_2p5M_struct.pkl'
+train_path_struct = 'data/splits/train_250k_struct.pkl'
+valid_path_struct = 'data/splits/valid_250k_struct.pkl'
+test_path_struct = 'data/splits/test_250k_struct.pkl'
 
 config_ = config.get_config()
 
@@ -54,14 +54,10 @@ def get_data_structures():
         with open(test_path_struct, 'rb') as f:
             test = pickle.load(f)
     else:
-        if check_file("data/data_2p5M_struct.pkl") == False:
-            raise FileNotFoundError("data_2p5M_struct.pkl doesn't exist or is empty")
-        with open('data/data_2p5M_struct.pkl', 'rb') as file:
+        if check_file("data/data_250k_struct.pkl") == False:
+            raise FileNotFoundError("data_250k_struct.pkl doesn't exist or is empty")
+        with open('data/data_250k_struct.pkl', 'rb') as file:
             data_for_transformer = pickle.load(file)
-        #print(len(data_for_transformer))
-        #mfes = [mfe for _, mfe, _ in data_for_transformer]
-        #standardized_mfes = dataset.standardize_mfe(mfes)
-        #standardized_data = [(sequence, standardized_mfe, structure) for (sequence, _, structure), standardized_mfe in zip(data_for_transformer, standardized_mfes)]
         train, valid, test = dataset.data_split(data_for_transformer)
 
         with open(train_path_struct, 'wb') as f:
@@ -126,10 +122,10 @@ def hyperparam_tune(objective_function):
         
 
 train, valid, test = get_data_structures()
-train_dataloader = BucketDataLoader(train, config_)
-valid_dataloader = BucketDataLoader(valid, config_)
-test_dataloader = BucketDataLoader(test, config_)
-transformer.train_model(config_, train_dataloader, valid_dataloader, test_dataloader)
+#train_dataloader = BucketDataLoader(train, config_)
+#valid_dataloader = BucketDataLoader(valid, config_)
+#test_dataloader = BucketDataLoader(test, config_)
+#transformer.train_model(config_, train_dataloader, valid_dataloader, test_dataloader)
 
 #hyperparam_tune(objective_function)
 

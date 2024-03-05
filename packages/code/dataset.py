@@ -14,16 +14,6 @@ def data_split(data):
 
     return train_dataset, val_dataset, test_dataset
 
-
-def standardize_mfe(mfes):
-    mfes_ = [[mfe] for mfe in mfes]
-    
-    scaler = StandardScaler()
-    standardized_mfes = scaler.fit_transform(mfes_)
-    
-    standardized_mfes = [mfe[0] for mfe in standardized_mfes]
-    
-    return standardized_mfes
         
 
 
