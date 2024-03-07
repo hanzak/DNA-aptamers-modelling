@@ -5,14 +5,7 @@ import pickle
 import os
 from BucketDataLoader import BucketDataLoader
 import numpy as np
-
-train_path_mfe = 'data/splits/train_250k.pkl'
-valid_path_mfe = 'data/splits/valid_250k.pkl'
-test_path_mfe = 'data/splits/test_250k.pkl'
-
-train_path_struct = 'data/splits/train_5M_struct.pkl'
-valid_path_struct = 'data/splits/valid_5M_struct.pkl'
-test_path_struct = 'data/splits/test_5M_struct.pkl'
+import json
 
 config_ = config.get_config()
 
@@ -45,26 +38,26 @@ def get_data_mfes():
     return train, valid, test
 
 
-def get_data_structures():
-    if check_file(train_path_struct) and check_file(valid_path_struct) and check_file(test_path_struct):
-        with open(train_path_struct, 'rb') as f:
+def get_data_structures(data_name):
+    if check_file(f"data/splits/train_{data_name}_struct.pkl") and check_file(f"data/splits/valid_{data_name}_struct.pkl") and check_file(f"data/splits/test_{data_name}_struct.pkl"):
+        with open(f"data/splits/train_{data_name}_struct.pkl", 'rb') as f:
             train = pickle.load(f)
-        with open(valid_path_struct, 'rb') as f:
+        with open(f"data/splits/valid_{data_name}_struct.pkl", 'rb') as f:
             valid = pickle.load(f)
-        with open(test_path_struct, 'rb') as f:
+        with open(f"data/splits/test_{data_name}_struct.pkl", 'rb') as f:
             test = pickle.load(f)
     else:
-        if check_file("data/data_5M_struct.pkl") == False:
-            raise FileNotFoundError("data_250k_struct.pkl doesn't exist or is empty")
-        with open('data/data_5M_struct.pkl', 'rb') as file:
+        if check_file(f"data/data_{data_name}_struct.pkl") == False:
+            raise FileNotFoundError(f"data_{data_name}_struct.pkl doesn't exist or is empty")
+        with open(f'data/data_{data_name}_struct.pkl', 'rb') as file:
             data_for_transformer = pickle.load(file)
         train, valid, test = dataset.data_split(data_for_transformer)
 
-        with open(train_path_struct, 'wb') as f:
+        with open(f"data/splits/train_{data_name}_struct.pkl", 'wb') as f:
             pickle.dump(train, f)
-        with open(valid_path_struct, 'wb') as f:
+        with open(f"data/splits/valid_{data_name}_struct.pkl", 'wb') as f:
             pickle.dump(valid, f)
-        with open(test_path_struct, 'wb') as f:
+        with open(f"data/splits/test_{data_name}_struct.pkl", 'wb') as f:
             pickle.dump(test, f) 
     return train, valid, test
 
@@ -74,18 +67,9 @@ from skopt import gp_minimize
 np.int = int
 
 def objective_function(hyperparameters):
-    config_ = config.get_config()
-    config_['layers_encoder'] = hyperparameters[0]
-    config_['layers_decoder'] = hyperparameters[1]
-    config_['heads'] = hyperparameters[2]
-    config_['d_model'] = hyperparameters[3]
-    config_['d_ff'] = hyperparameters[4]
-    config_['learning_rate'] = hyperparameters[5]
-    config_['batch_size'] = int(hyperparameters[6])
-    
-    train_dataloader = BucketDataLoader(train, config_)
-    valid_dataloader = BucketDataLoader(valid, config_)
-    test_dataloader = BucketDataLoader(test, config_)
+    config_['learning_rate'] = hyperparameters[0]
+    config_['batch_size'] = int(hyperparameters[1])
+    config_['dropout'] = int(hyperparameters[2])
     
     valid_loss = transformer.train_model(config_, train_dataloader, valid_dataloader, test_dataloader)
     
@@ -93,14 +77,9 @@ def objective_function(hyperparameters):
 
 def hyperparam_tune(objective_function):
     hyperparameter_space = [
-        Integer(1, 2, name='layers_encoder'),  
-        Integer(1, 2, name='layers_decoder'),
-        Categorical([2, 4], name='heads'),  
-        Categorical([128, 256], name='d_model'),  
-        Categorical([256, 512], name='d_ff'),  
-        Categorical([1e-6, 1e-5, 1e-4, 1e-3], name='learning_rate'),  
-        Categorical([256, 512], name='batch_size'),
-        Categorical([0.1, 0.15, 0.2], name='dropout')
+        Real(1e-6, 1e-3, prior='log-uniform', name='learning_rate'),
+        Categorical([128, 256, 512], name='batch_size'),
+        Real(0.1, 0.7, name='dropout')
     ]
 
     results = gp_minimize(
@@ -121,28 +100,37 @@ def hyperparam_tune(objective_function):
         json.dump(results_dict, f, indent=4)
         
 
-#get_data_structures()
-get_data_mfes()
+data_name = "250k"
+
+
+train, valid, test = get_data_structures(data_name)
 #train_dataloader = BucketDataLoader(train, config_)
 #valid_dataloader = BucketDataLoader(valid, config_)
 #test_dataloader = BucketDataLoader(test, config_)
 #transformer.train_model(config_, train_dataloader, valid_dataloader, test_dataloader)
 
-#hyperparam_tune(objective_function)
+train_dataloader = BucketDataLoader(train, config_)
+valid_dataloader = BucketDataLoader(valid, config_)
+test_dataloader = BucketDataLoader(test, config_)
+hyperparam_tune(objective_function)
+
+
+
 
 """
+
 import torch
 import transformer
 
 config_ = config.get_config()
 device = config_['device']
 
-train, valid, test = get_data_structures()
+train, valid, test = get_data_structures(data_name)
 test_dataloader = BucketDataLoader(test, config_)
 
-model_path = 'packages/model/runs/tmodel/tuning/transformer_04-03-2024_161833.pth'
+model_path = 'packages/model/model_checkpoint/06-03-2024_033200_2p5M_model_checkpoint.pth'
 model = transformer.Transformer(config_)  
-model.load_state_dict(torch.load(model_path))
+model.load_state_dict(torch.load(model_path)['model_state_dict'])
 model.eval()  
 
 

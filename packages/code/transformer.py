@@ -152,11 +152,11 @@ class Transformer(nn.Module):
         target = self.positional_encoder(target)
         decoder_output = self.transformer_decoder(target, encoder_output)
 
-        mfe = torch.mean(encoder_output, dim=1)
-        mfe = self.mfe_out(mfe)
-
         decoded = self.decoder_out(decoder_output)
         decoded_probs = F.softmax(decoded, dim=-1)  
+        
+        mfe = torch.mean(decoder_output, dim=1)
+        mfe = self.mfe_out(mfe)
 
         return mfe, decoded, decoded_probs
     
@@ -177,7 +177,7 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     ################
     #Setting up variables
     ################
-    early_stop = 5
+    early_stop = 10
     best_valid_loss = 1e9
     counter = 0
     train_loss_mse = []
@@ -206,9 +206,9 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     model = Transformer(config)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
     loss_function_mfe = nn.MSELoss()
-    ce_weights = torch.tensor([0.0, 100.0, 100.0, 1.0])
+    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0])
     ce_weights = ce_weights.to(device)
-    custom_loss = CustomLoss(2, ce_weights)
+    custom_loss = CustomLoss(10.0, ce_weights)
     #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=0)
     
     
@@ -216,7 +216,7 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     #Tensorboard output folder and init
     ################
     start_time = datetime.datetime.now().strftime("%d-%m-%Y_%H%M%S")
-    foldername = "run_2p5M_" + start_time + "_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size'])
+    foldername = "run_250k_" + start_time + "_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size'])
     log_dir = os.path.join(config['exp_name'], foldername)
     os.makedirs(log_dir, exist_ok=True)
     writer = tb.SummaryWriter(log_dir=log_dir)
@@ -252,7 +252,9 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         #iterator used in an attempt to save memory. using nparray instead of lists.
         it=0
         running_ce=0
-        test_ = 0
+        initial_loss_mse = 0
+        initial_loss_ce = 0
+        is_first_epoch = True
         for batch in batch_iterator:
             sq, mfe, structure, mask = batch
             
@@ -276,7 +278,7 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
             running_ce += loss_custom.item()
             
             #Minimizing total loss
-            total_loss = loss_mfe + loss_custom
+            total_loss = loss_mfe + 10*loss_custom
             
             total_loss.backward()
             optimizer.step()
@@ -351,6 +353,8 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         ce_valid = running_ce/len(valid_dataloader.dataset)
         valid_loss_mse.append(mse_valid)
         valid_loss_ce.append(ce_valid)
+        
+        total_valid_loss = mse_valid + ce_valid
          
         
         writer.add_scalar('MSE-Loss/Train', mse_train, epoch+1)
@@ -374,23 +378,25 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         ################
         #EARLY STOP AND CHECKPOINT
         ################ 
-        if mse_valid < best_valid_loss:
+        if total_valid_loss < best_valid_loss:
             best_epoch = epoch
-            best_valid_loss = mse_valid
+            best_valid_loss = total_valid_loss
             counter = 0
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-            }, f"packages/model/model_checkpoint/{start_time}_model_checkpoint.pth")
+            }, f"packages/model/model_checkpoint/{start_time}_250k_model_checkpoint.pth")
         else:
             counter += 1
             
+        
         if counter >= early_stop:
             print(f"Stopped early at epoch {epoch+1}")
             plot_predvsactual(writer, actual_values_train, predicted_values_train, epoch, mse_train, "Train")
             plot_predvsactual(writer, actual_values_valid, predicted_values_valid, epoch, mse_valid, "Valid")
             break
+        
             
         
         ################
@@ -493,7 +499,7 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     ################
     #Hyperparam tune based on minimizing sum of both losses.
     ################  
-    return mse_valid + ce_valid
+    return best_valid_loss
         
 def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str):
         #Plot predicted vs actual for train data every 20 epoch
