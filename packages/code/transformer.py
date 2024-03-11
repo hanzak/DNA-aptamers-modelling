@@ -8,7 +8,7 @@ from pathlib import Path
 from dataset import data_split
 
 import torch.utils.tensorboard as tb
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 import numpy as np
 
 from tqdm import tqdm
@@ -16,7 +16,14 @@ import datetime
 import os
 
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_squared_error, mean_absolute_error, log_loss
+from sklearn.metrics import mean_squared_error, mean_absolute_error, log_loss, confusion_matrix
+
+seed = 421  
+torch.manual_seed(seed)
+np.random.seed(seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 class PositionalEncoding(nn.Module):
@@ -51,35 +58,97 @@ class PositionalEncoding(nn.Module):
         #we don't want the model to learn this
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False)
         return self.dropout(x)
+    
 
 class CustomLoss(nn.Module):
     def __init__(self, penalty_weight, ce_weights):
         super(CustomLoss, self).__init__()
         self.penalty_weight = penalty_weight
-        self.ce_weights = ce_weights  
+        self.ce_weights = ce_weights
 
-    def forward(self, logits, targets, structures):
+    def forward(self, logits, targets, predicted_structures):
         ce_loss = self.weighted_cross_entropy_loss(logits, targets, self.ce_weights)
-
-        penalty = self.compute_penalty(structures)
-
-        total_loss = ce_loss + self.penalty_weight * penalty
+        penalty = self.compute_penalty(predicted_structures)
+        total_loss = (ce_loss + self.penalty_weight*penalty)
 
         return total_loss
-
-    def compute_penalty(self, structures):
-        left_parentheses = (structures == 1).sum(dim=1)
-        right_parentheses = (structures == 2).sum(dim=1)
-        imbalance = torch.abs(left_parentheses - right_parentheses)
-
-        penalty = imbalance.double().mean()
-
-        return penalty
     
-    ###
-    ###CHATGTPd
-    ###
+    def compute_penalty(self, predicted_structures):      
+        predicted_structures_tensor = predicted_structures.squeeze(-1)
+        
+        device = predicted_structures.device
+        
+        penalty_structure = torch.zeros(predicted_structures_tensor.size(0), dtype=torch.int)
+        counter = torch.zeros(predicted_structures_tensor.size(0), dtype=torch.int)
+        
+        penalty_for_empty_loops = torch.zeros(predicted_structures_tensor.size(0), dtype=torch.int).to(device)
+        
+        penalty_structure = penalty_structure.to(device)
+        counter = counter.to(device)
+        penalty_for_empty_loops = penalty_for_empty_loops.to(device)
+                
+        for i in range(predicted_structures_tensor.size(1)):
+            #print(structures_tensor[:, i] == 3)
+            #print(structures_tensor[:, i])
+            
+            if i != predicted_structures_tensor.size(1)-1:
+                rp_plus_1 = (predicted_structures_tensor[:, i+1] == 2).int()
+            
+            if i != predicted_structures_tensor.size(1)-1 and i != predicted_structures_tensor.size(1)-2:
+                dot = (predicted_structures_tensor[:, i+1] == 3).int()
+                rp_plus_2 = (predicted_structures_tensor[:, i+2] == 2).int()
+                
+            if i != predicted_structures_tensor.size(1)-1 and i != predicted_structures_tensor.size(1)-2 and i != predicted_structures_tensor.size(1)-3:
+                dot2 = (predicted_structures_tensor[:, i+2] == 3).int()
+                rp_plus_3 = (predicted_structures_tensor[:, i+3] == 2).int()
+            
+            counter += (predicted_structures_tensor[:, i] == 1).int()
+            lp = (predicted_structures_tensor[:, i] == 1).int()
+            rp = (predicted_structures_tensor[:, i] == 2).int()
+                        
+            error_loop = lp + rp_plus_1
+            penalty_structure += 2*(error_loop==2).int()
+            
+            too_short_loop1 = lp + dot + rp_plus_2
+            penalty_structure += 3*(too_short_loop1==3).int()
+            
+            too_short_loop2 = lp + dot + dot2 + rp_plus_3
+            penalty_structure += 4*(too_short_loop2==4).int()
+                                    
+            unmatched_rp = torch.max(rp - counter, torch.zeros_like(counter))
+
+            penalty_structure += unmatched_rp
+
+            matched = rp - unmatched_rp
+            counter -= matched                                   
+            
+        penalty_structure += counter
+                
+        total_penalty = penalty_structure.float().mean().item()/predicted_structures_tensor.size(1)
+                                        
+        return total_penalty    
+    
+    def similarity_distance(self, predicted_structures, targets):
+        paired_predicted = ((predicted_structures == 1) | (predicted_structures == 2)).int()
+        unpaired_predicted = (predicted_structures == 3).int()
+
+        paired_targets = ((targets == 1) | (targets == 2)).int()
+        unpaired_targets = (targets == 3).int()
+
+        paired_distance = torch.sum(paired_predicted != paired_targets, dim=1)
+        unpaired_distance = torch.sum(unpaired_predicted != unpaired_targets, dim=1)
+
+        total_distance= paired_distance + unpaired_distance
+        normalized_distance = total_distance.float() / predicted_structures.size(1)
+        
+        similarity = torch.exp(-normalized_distance.mean())
+
+        return similarity
+        
+        
+
     def weighted_cross_entropy_loss(self, logits, targets, weights):
+        #print(logits.shape)
         log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
         targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=logits.size(-1))
         
@@ -87,7 +156,7 @@ class CustomLoss(nn.Module):
         ce_loss = -weighted_log_probs.sum(dim=-1).mean()
         
         return ce_loss
-    
+       
 
 class Transformer(nn.Module):
     
@@ -136,6 +205,8 @@ class Transformer(nn.Module):
         
         self.mfe_out = nn.Linear(self.d_model, 1)
         self.decoder_out = nn.Linear(self.d_model, self.target_vocab_size)
+        self.num_hairpins_out = nn.Linear(self.d_model, 100)  
+        self.avg_len_out = nn.Linear(self.d_model, 1)  
         
         self.init_weights()
         
@@ -144,8 +215,23 @@ class Transformer(nn.Module):
     def forward(self, src, src_mask):
         target = src
         
+        batchsize = src.size(0)
+        
         src = self.embedding(src) * math.sqrt(self.d_model)
         src = self.positional_encoder(src)
+        
+        sequence_lengths = (src != 0).sum(dim=1)
+        max_length = sequence_lengths.max().item()
+        
+        sequence_lengths_normalized = sequence_lengths.float() / max_length  
+        sequence_lengths_normalized = sequence_lengths_normalized.unsqueeze(1)
+        
+        extend_mask = torch.zeros((batchsize, 1), dtype=torch.bool)
+        extend_mask = extend_mask.to(self.device)
+
+        src = torch.cat([src, sequence_lengths_normalized], dim=1)
+        src_mask = torch.cat([src_mask,extend_mask], dim=1)
+        
         encoder_output = self.transformer_encoder(src, src_key_padding_mask=src_mask)
 
         target = self.embedding(target) * math.sqrt(self.d_model)
@@ -155,10 +241,12 @@ class Transformer(nn.Module):
         decoded = self.decoder_out(decoder_output)
         decoded_probs = F.softmax(decoded, dim=-1)  
         
-        mfe = torch.mean(decoder_output, dim=1)
-        mfe = self.mfe_out(mfe)
+        mean_decoder_out = torch.mean(encoder_output, dim=1)
+        mfe = self.mfe_out(mean_decoder_out)
+        num_hairpins_pred = self.num_hairpins_out(mean_decoder_out)  
+        avg_len_pred = self.avg_len_out(mean_decoder_out)  
 
-        return mfe, decoded, decoded_probs
+        return mfe, decoded, decoded_probs, num_hairpins_pred, avg_len_pred
     
     def init_weights(self):
         nn.init.xavier_uniform_(self.embedding.weight)
@@ -170,53 +258,69 @@ class Transformer(nn.Module):
                     nn.init.constant_(layer.bias, 0)
 
         
-def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
+def train_model(config, train_dataloader, valid_dataloader):
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
     print(f"using device {device}")
     
     ################
     #Setting up variables
     ################
-    early_stop = 10
+    early_stop = 15
     best_valid_loss = 1e9
     counter = 0
-    train_loss_mse = []
+    train_loss_mse_mfe = []
+    train_loss_ce_num_hairpins = []
+    train_loss_mse_avg_len = []
     train_loss_ce = []
-    valid_loss_mse = []
+    valid_loss_mse_mfe = []
+    valid_loss_ce_num_hairpins = []
+    valid_loss_mse_avg_len = []
     valid_loss_ce = []
+    list_train_loss_total = []
+    list_valid_loss_total = []
     last_epoch = 0
     best_epoch = 0
     interval=10
     start_epoch = 0
     n_epochs = config['num_epochs']
+    normalize_epochs = 4
+    print_prediction=True
+    reverse_mapping = {1: '(', 2: ')', 3: '.'}
     
-    predicted_values_train = np.zeros(len(train_dataloader.dataset))
-    actual_values_train = np.zeros(len(train_dataloader.dataset))
-    #predicted_structures_train = np.empty(len(train_dataloader.dataset), dtype=object)
-    #actual_structures_train = np.empty(len(train_dataloader.dataset), dtype=object)
     
-    predicted_values_valid = np.zeros(len(valid_dataloader.dataset))
-    actual_values_valid = np.zeros(len(valid_dataloader.dataset))
-    #predicted_structures_valid = np.empty(len(valid_dataloader.dataset), dtype=object)
-    #actual_structures_valid = np.empty(len(valid_dataloader.dataset), dtype=object)
+    predicted_mfes_train = np.zeros(len(train_dataloader.dataset))
+    actual_mfes_train = np.zeros(len(train_dataloader.dataset))
+    predicted_num_hairpins_train = np.zeros(len(train_dataloader.dataset))
+    actual_num_hairpins_train = np.zeros(len(train_dataloader.dataset))
+    predicted_avg_len_train = np.zeros(len(train_dataloader.dataset))
+    actual_avg_len_train = np.zeros(len(train_dataloader.dataset))
+    
+    
+    predicted_mfes_valid = np.zeros(len(valid_dataloader.dataset))
+    actual_mfes_valid = np.zeros(len(valid_dataloader.dataset))
+    predicted_num_hairpins_valid = np.zeros(len(valid_dataloader.dataset))
+    actual_num_hairpins_valid = np.zeros(len(valid_dataloader.dataset))
+    predicted_avg_len_valid = np.zeros(len(valid_dataloader.dataset))
+    actual_avg_len_valid = np.zeros(len(valid_dataloader.dataset))
+    
     
     ################
     #Model, Optim and Loss
     ################
     model = Transformer(config)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-    loss_function_mfe = nn.MSELoss()
-    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0])
+    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.2])
     ce_weights = ce_weights.to(device)
-    custom_loss = CustomLoss(10.0, ce_weights)
-    #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=0)
-    
+    loss_function_mse = nn.MSELoss()
+    custom_loss = CustomLoss(1.0, ce_weights)   
+    loss_fun_num_hairpins = nn.CrossEntropyLoss()
+    #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=4, T_mult=1, eta_min=1e-5)
     
     ################
     #Tensorboard output folder and init
     ################
     start_time = datetime.datetime.now().strftime("%d-%m-%Y_%H%M%S")
-    foldername = "run_250k_" + start_time + "_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size'])
+    foldername = "run_" + start_time + "_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size']) + "_dropout_" + str(config['dropout'])
     log_dir = os.path.join(config['exp_name'], foldername)
     os.makedirs(log_dir, exist_ok=True)
     writer = tb.SummaryWriter(log_dir=log_dir)
@@ -225,13 +329,14 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     #Check for existing checkpoint
     ################
     """
-    checkpoint_path = f"packages/model/model_checkpoint/{config['prefix']}model_checkpoint.pth"
+    checkpoint_path = f"packages/model/model_checkpoint/2p5M/11-03-2024_011243_model_checkpoint.pth"
     if os.path.exists(checkpoint_path):
         try:
             checkpoint = torch.load(checkpoint_path)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch'] + 1  
+            writer = tb.SummaryWriter(log_dir="packages/model/runs/tmodel/2p5M/run_11-03-2024_011243_lr_0.0002_batchsize_128_dropout_0.1")
         except FileNotFoundError:
             print("No checkpoint found.")   
     else:
@@ -240,9 +345,21 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         
     ################
     #Loop for EPOCHS.
-    ################       
+    ################ 
+    
+    first_epoch = True
+    
+    baseline_mse_mfe = 0
+    baseline_ce_num_hairpins = 0
+    baseline_mse_avg_len = 0
+    baseline_ce = 0
+    normalized=False
+    #update_interval=len(train_dataloader)//20
+        
     for epoch in range(start_epoch, n_epochs):
         
+        print_prediction=True
+    
         ################
         #TRAINING
         ################ 
@@ -252,59 +369,97 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         #iterator used in an attempt to save memory. using nparray instead of lists.
         it=0
         running_ce=0
-        initial_loss_mse = 0
-        initial_loss_ce = 0
-        is_first_epoch = True
-        for batch in batch_iterator:
-            sq, mfe, structure, mask = batch
+        running_ce_hairpins=0
+        for i,batch in enumerate(batch_iterator):
+            sq, mfe, target, num_hairpins, avg_len, mask = batch
             
             #when adding custom loss, need to convert this to float for some reasons.
             mfe=mfe.float()
+            #num_hairpins=num_hairpins.float()
+            avg_len=avg_len.float()
             
-            sq, mfe, structure, mask = sq.to(device), mfe.to(device), structure.to(device), mask.to(device)
+            sq, mfe, target, num_hairpins, avg_len, mask = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device), avg_len.to(device), mask.to(device)
     
-            mfes, structures, structures_prob = model(sq, mask)
-                        
-            output_reshaped = structures.contiguous().view(-1, config['target_vocab_size'])
-            target_reshaped = structure.contiguous().view(-1) 
-            
+            mfes, predicted_structures, structures_prob, predicted_num_hairpins, predicted_avg_len = model(sq, mask)
+        
             optimizer.zero_grad()
             
             predicted_indices = torch.argmax(structures_prob, dim=-1)
-                                    
-            loss_mfe = loss_function_mfe(mfes, mfe)
-            loss_custom = custom_loss(output_reshaped, target_reshaped, predicted_indices)
+            predicted_prob_num_hairpins = F.softmax(predicted_num_hairpins, dim=-1)  
+            predicted_class_num_hairpins = torch.argmax(predicted_prob_num_hairpins, dim=-1)
             
+            
+            num_hairpins_labels = num_hairpins.squeeze(1)
+            
+            loss_mfe = loss_function_mse(mfes, mfe)
+            loss_num_hairpins = loss_fun_num_hairpins(predicted_num_hairpins, num_hairpins_labels)
+            loss_avg_len = loss_function_mse(predicted_avg_len, avg_len)
+            loss_custom = custom_loss(predicted_structures, target, predicted_indices)
+            
+            
+            if epoch < normalize_epochs:                                        
+                baseline_mse_mfe += loss_mfe.item()
+                baseline_ce_num_hairpins += loss_num_hairpins.item()
+                baseline_mse_avg_len += loss_avg_len.item()
+                baseline_ce += loss_custom.item()
+
+                total_loss = loss_mfe + loss_custom + loss_num_hairpins + loss_avg_len
+            else:
+                if epoch == normalize_epochs and not normalized:
+                    num_batches = len(train_dataloader) * normalize_epochs
+                    baseline_mse_mfe /= num_batches
+                    baseline_ce_num_hairpins /= num_batches
+                    baseline_mse_avg_len /= num_batches
+                    baseline_ce /= num_batches
+                    normalized = True
+                    
+                normalized_mse_mfe = loss_mfe / baseline_mse_mfe
+                normalized_ce_num_hairpins = loss_num_hairpins / baseline_ce_num_hairpins
+                normalized_mse_avg_len = loss_avg_len / baseline_mse_avg_len
+                normalized_ce = loss_custom / baseline_ce
+                
+                            
+                total_loss = normalized_mse_mfe + normalized_ce_num_hairpins + normalized_mse_avg_len + normalized_ce
+
             running_ce += loss_custom.item()
+            running_ce_hairpins += loss_num_hairpins.item()
             
-            #Minimizing total loss
-            total_loss = loss_mfe + 10*loss_custom
-            
+            #total_loss = loss_mfe + loss_custom + loss_loops
+                    
             total_loss.backward()
             optimizer.step()
             #scheduler.step()
-            pred = mfes.detach().cpu().numpy()
-            act = mfe.detach().cpu().numpy()
+            pred_mfe = mfes.detach().cpu().numpy()
             
-            predicted_values_train[it*len(pred):(it+1)*len(pred)] = pred.flatten()
-            actual_values_train[it*len(act):(it+1)*len(act)] = act.flatten()
-                        
-            #predicted_indices = predicted_indices.detach().cpu().numpy()
-            #act_structure = structure.detach().cpu().numpy()
+            pred_num_hairpins = predicted_class_num_hairpins.detach().cpu().numpy()
+            act_num_hairpins = num_hairpins.detach().cpu().numpy()
             
-            #predicted_indices_list = predicted_indices.tolist()
-            #act_structure_list = act_structure.tolist()
-                                    
-            #predicted_structures_train[it*len(predicted_indices):(it+1)*len(predicted_indices)] = predicted_indices_list
-            #actual_structures_train[it*len(act_structure):(it+1)*len(act_structure)] = act_structure_list
+            pred_avg_len = predicted_avg_len.detach().cpu().numpy()
+            
+            predicted_mfes_train[it*len(pred_mfe):(it+1)*len(pred_mfe)] = pred_mfe.flatten()
+            predicted_num_hairpins_train[it*len(pred_num_hairpins):(it+1)*len(pred_num_hairpins)] = pred_num_hairpins.flatten()
+            predicted_avg_len_train[it*len(pred_avg_len):(it+1)*len(pred_avg_len)] = pred_avg_len.flatten()
+            
+            if first_epoch:
+                act_avg_len = avg_len.detach().cpu().numpy()
+                act_mfe = mfe.detach().cpu().numpy()
+                actual_mfes_train[it*len(act_mfe):(it+1)*len(act_mfe)] = act_mfe.flatten()
+                actual_num_hairpins_train[it*len(act_num_hairpins):(it+1)*len(act_num_hairpins)] = act_num_hairpins.flatten()
+                actual_avg_len_train[it*len(act_avg_len):(it+1)*len(act_avg_len)] = act_avg_len.flatten()
             
             it+=1
 
-        mse_train = mean_squared_error(actual_values_train, predicted_values_train)
-        #ce_train = log_loss(actual_structures_train, predicted_structures_train)
-        ce_train = running_ce/len(train_dataloader.dataset)
-        train_loss_mse.append(mse_train)
+        mse_train_mfe = mean_squared_error(actual_mfes_train, predicted_mfes_train)
+        ce_train_num_hairpins = running_ce_hairpins/len(train_dataloader)
+        mse_train_avg_len = mean_squared_error(actual_avg_len_train, predicted_avg_len_train)
+        
+        ce_train = running_ce/len(train_dataloader)
+        total_train_loss = ce_train + mse_train_mfe + ce_train_num_hairpins + mse_train_avg_len
+        train_loss_mse_mfe.append(mse_train_mfe)
+        train_loss_ce_num_hairpins.append(ce_train_num_hairpins)
+        train_loss_mse_avg_len.append(mse_train_avg_len)
         train_loss_ce.append(ce_train)
+        list_train_loss_total.append(total_train_loss)
         
         #########################
         #VALIDATION PER EPOCH
@@ -315,109 +470,177 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
         
         it=0
         running_ce=0
+        running_ce_hairpins=0
         with torch.no_grad():
             for batch in batch_iterator_valid:
-                sq, mfe, structure, mask = batch
-                sq, structure, mask = sq.to(device), structure.to(device), mask.to(device)
+                sq, mfe, target, num_hairpins, avg_len, mask = batch                
+                sq, mfe, target, num_hairpins, avg_len, mask = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device), avg_len.to(device), mask.to(device)
                 
-                mfes, structures, structures_prob = model(sq, mask)
-                
-                output_reshaped = structures.contiguous().view(-1, config['target_vocab_size'])
-                target_reshaped = structure.contiguous().view(-1) 
+                mfes, predicted_structures, structures_prob, predicted_num_hairpins, predicted_avg_len = model(sq, mask)
             
                 predicted_indices = torch.argmax(structures_prob, dim=-1)
+                predicted_prob_num_hairpins = F.softmax(predicted_num_hairpins, dim=-1)  
+                predicted_class_num_hairpins = torch.argmax(predicted_prob_num_hairpins, dim=-1)
+                
+                if print_prediction:
+                    predicted = predicted_indices[0:10].tolist()
+                    target_structure = target[0:10].tolist()
+                    decoded_predicted_structures = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in predicted]
+                    target_structure_10 = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in target_structure]
+                    
+                    print("Predicted structures: ")
+                    for j,decoded_structure in enumerate(decoded_predicted_structures):
+                        print(decoded_structure)
+                        print(mfes[j])
                         
-                loss_custom = custom_loss(output_reshaped, target_reshaped, predicted_indices)
+                    print("Target structures: ")
+                    for j,target_ in enumerate(target_structure_10):
+                        print(target_)
+                        print(mfe[j])
+                        
+                    print_prediction=False
+
+                
+                num_hairpins_labels = num_hairpins.squeeze(1)
+                        
+                loss_custom = custom_loss(predicted_structures, target, predicted_indices)
+                loss_num_hairpins = loss_fun_num_hairpins(predicted_num_hairpins, num_hairpins_labels)
                 
                 running_ce += loss_custom.item()
+                running_ce_hairpins += loss_num_hairpins.item()
 
-                pred = mfes.detach().cpu().numpy()
-                act = mfe.detach().cpu().numpy()
-                #act_structure = structure.detach().cpu().numpy()
-                
-                predicted_values_valid[it*len(pred):(it+1)*len(pred)] = pred.flatten()
-                actual_values_valid[it*len(act):(it+1)*len(act)] = act.flatten()
-                
-                #predicted_indices = torch.argmax(structures_prob, dim=-1)  
-                #predicted_indices = predicted_indices.detach().cpu().numpy()
-                
-                #predicted_indices_list = predicted_indices.tolist()
-                #act_structure_list = act_structure.tolist()
-                
-                #predicted_structures_valid[it*len(predicted_indices):(it+1)*len(predicted_indices)] = predicted_indices_list
-                #actual_structures_valid[it*len(act_structure):(it+1)*len(act_structure)] = act_structure_list
+                pred_mfe = mfes.detach().cpu().numpy()
+                act_mfe = mfe.detach().cpu().numpy()
+
+                pred_num_hairpins = predicted_class_num_hairpins.detach().cpu().numpy()
+                act_num_hairpins = num_hairpins.detach().cpu().numpy()
+
+                pred_avg_len = predicted_avg_len.detach().cpu().numpy()
+                act_avg_len = avg_len.detach().cpu().numpy()
+
+                predicted_mfes_valid[it*len(pred_mfe):(it+1)*len(pred_mfe)] = pred_mfe.flatten()
+                predicted_num_hairpins_valid[it*len(pred_num_hairpins):(it+1)*len(pred_num_hairpins)] = pred_num_hairpins.flatten()
+                predicted_avg_len_valid[it*len(pred_avg_len):(it+1)*len(pred_avg_len)] = pred_avg_len.flatten()
+
+                if first_epoch:
+                    actual_mfes_valid[it*len(act_mfe):(it+1)*len(act_mfe)] = act_mfe.flatten()
+                    actual_num_hairpins_valid[it*len(act_num_hairpins):(it+1)*len(act_num_hairpins)] = act_num_hairpins.flatten()
+                    actual_avg_len_valid[it*len(act_avg_len):(it+1)*len(act_avg_len)] = act_avg_len.flatten()
+
                 it+=1
+
         
-        mse_valid = mean_squared_error(actual_values_valid, predicted_values_valid)
-        #ce_valid = log_loss(actual_structures_valid, predicted_structures_valid)
-        ce_valid = running_ce/len(valid_dataloader.dataset)
-        valid_loss_mse.append(mse_valid)
+        first_epoch = False
+        
+        mse_valid_mfe = mean_squared_error(actual_mfes_valid, predicted_mfes_valid)
+        ce_valid_num_hairpins = running_ce_hairpins/len(valid_dataloader)
+        mse_valid_avg_len = mean_squared_error(actual_avg_len_valid, predicted_avg_len_valid)
+
+        ce_valid = running_ce/len(valid_dataloader)
+        total_valid_loss = ce_valid + mse_valid_mfe + ce_valid_num_hairpins + mse_valid_avg_len
+        valid_loss_mse_mfe.append(mse_valid_mfe)
+        valid_loss_ce_num_hairpins.append(ce_valid_num_hairpins)
+        valid_loss_mse_avg_len.append(mse_valid_avg_len)
         valid_loss_ce.append(ce_valid)
+        list_valid_loss_total.append(total_valid_loss)
         
-        total_valid_loss = mse_valid + ce_valid
-         
-        
-        writer.add_scalar('MSE-Loss/Train', mse_train, epoch+1)
-        writer.add_scalar('MSE-Loss/Valid', mse_valid, epoch+1)
+        writer.add_scalar('MSE-mfe-Loss/Train', mse_train_mfe, epoch+1)
+        writer.add_scalar('MSE-mfe-Loss/Valid', mse_valid_mfe, epoch+1)
+        writer.add_scalar('CE-num_hairpins-Loss/Train', ce_train_num_hairpins, epoch+1)
+        writer.add_scalar('CE-num_hairpins-Loss/Valid', ce_valid_num_hairpins, epoch+1)
+        writer.add_scalar('MSE-avg_len-Loss/Train', mse_train_avg_len, epoch+1)
+        writer.add_scalar('MSE-avg_len-Loss/Valid', mse_valid_avg_len, epoch+1)
         writer.add_scalar('CE-Loss/Train', ce_train, epoch+1)
         writer.add_scalar('CE-Loss/Valid', ce_valid, epoch+1)
+        writer.add_scalar('Total-Loss/Train', total_train_loss, epoch+1)
+        writer.add_scalar('Total-Loss/Valid', total_valid_loss, epoch+1)
         
         ################
         #TRACKING per interval.
         ################ 
         last_epoch = epoch
         
-        if epoch % interval == 0:
+        if epoch % interval == 0 and normalized:
             for name, param in model.named_parameters():
                 writer.add_histogram(f'Parameters/{name}', param, epoch)
                 if param.grad is not None:
                     writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
-            plot_predvsactual(writer, actual_values_train, predicted_values_train, epoch, mse_train, "Train")        
-            plot_predvsactual(writer, actual_values_valid, predicted_values_valid, epoch, mse_valid, "Valid")
+            plot_predvsactual(writer, actual_mfes_train, predicted_mfes_train, epoch, mse_train_mfe, "Train", "mfe")        
+            plot_predvsactual(writer, actual_mfes_valid, predicted_mfes_valid, epoch, mse_valid_mfe, "Valid", "mfe")
+            plot_predvsactual(writer, actual_avg_len_train, predicted_avg_len_train, epoch, mse_train_avg_len, "Train", "avg_len")        
+            plot_predvsactual(writer, actual_avg_len_valid, predicted_avg_len_valid, epoch, mse_valid_avg_len, "Valid", "avg_len")
                  
         ################
         #EARLY STOP AND CHECKPOINT
         ################ 
-        if total_valid_loss < best_valid_loss:
+        if total_valid_loss < best_valid_loss and normalized:
+            best_predicted_mfes_valid = predicted_mfes_valid
+            best_predicted_num_hairpins_valid = predicted_num_hairpins_valid
+            best_predicted_avg_len_valid = predicted_avg_len_valid
             best_epoch = epoch
             best_valid_loss = total_valid_loss
+            best_mse_valid_mfe = mse_valid_mfe
+            best_ce_valid_num_hairpins = ce_valid_num_hairpins
+            best_mse_valid_avg_len = mse_valid_avg_len
             counter = 0
+            best_model_path = f"packages/model/model_checkpoint/2p5M-3layers/{start_time}_model_checkpoint.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-            }, f"packages/model/model_checkpoint/{start_time}_250k_model_checkpoint.pth")
-        else:
+            }, best_model_path)
+        elif normalized:
             counter += 1
             
         
         if counter >= early_stop:
             print(f"Stopped early at epoch {epoch+1}")
-            plot_predvsactual(writer, actual_values_train, predicted_values_train, epoch, mse_train, "Train")
-            plot_predvsactual(writer, actual_values_valid, predicted_values_valid, epoch, mse_valid, "Valid")
+            plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
+            plot_predvsactual(writer, actual_avg_len_valid, predicted_avg_len_valid, epoch, best_mse_valid_avg_len, "Valid", "avg_len")
             break
         
-            
-        
+
         ################
         #Output LOSS for visualization in terminal
         ################ 
-        print(f'Epoch {epoch+1}/{n_epochs}, MSE Train Loss: {mse_train}, CE Train Loss: {ce_train}, MSE valid loss: {mse_valid}, CE valid loss: {ce_valid}')
-        
+        print(f'Epoch {epoch+1}/{n_epochs}, MSE-mfe Train Loss: {mse_train_mfe}, CE-num_hairpins Train Loss: {ce_train_num_hairpins}, MSE-avg_len Train Loss: {mse_train_avg_len}, CE Train Loss: {ce_train}, \n MSE valid loss: {mse_valid_mfe}, CE-num_hairpins Valid Loss: {ce_valid_num_hairpins}, MSE-avg_len Valid Loss: {mse_valid_avg_len}, CE valid loss: {ce_valid}')
+
  
     ################
     #TRACKING.
     ################ 
     plt.figure(figsize=(10, 5))
-    plt.plot(train_loss_mse, label='Training Loss', color='blue')
-    plt.plot(valid_loss_mse, label='Validation Loss', color='orange')
+    plt.plot(train_loss_mse_mfe, label='Training Loss', color='blue')
+    plt.plot(valid_loss_mse_mfe, label='Validation Loss', color='orange')
     plt.xlabel('Epoch')
     plt.ylabel('MSE Loss')
-    plt.title('MSE Training and Validation Losses Over Epochs')
+    plt.title('MSE-mfe Training and Validation Losses Over Epochs')
     plt.legend()
     plt.grid(True)
     
-    writer.add_figure('MSE Training and Validation Losses Over Epochs', plt.gcf())
+    writer.add_figure('MSE-mfe Training and Validation Losses Over Epochs', plt.gcf())
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_loss_ce_num_hairpins, label='Training Loss', color='blue')
+    plt.plot(valid_loss_ce_num_hairpins, label='Validation Loss', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('CE Loss')
+    plt.title('CE-num_hairpins Training and Validation Losses Over Epochs')
+    plt.legend()
+    plt.grid(True)
+    
+    writer.add_figure('CE-num_hairpins Training and Validation Losses Over Epochs', plt.gcf())
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_loss_mse_avg_len, label='Training Loss', color='blue')
+    plt.plot(valid_loss_mse_avg_len, label='Validation Loss', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('MSE Loss')
+    plt.title('MSE-avg_len Training and Validation Losses Over Epochs')
+    plt.legend()
+    plt.grid(True)
+    
+    writer.add_figure('MSE-avg_len Training and Validation Losses Over Epochs', plt.gcf())
     
     plt.figure(figsize=(10, 5))
     plt.plot(train_loss_ce, label='Training Loss', color='blue')
@@ -430,88 +653,91 @@ def train_model(config, train_dataloader, valid_dataloader, test_dataloader):
     
     writer.add_figure('CE Training and Validation Losses Over Epochs', plt.gcf())
     
-    #scheduler_name = scheduler.__class__.__name__
-    #scheduler_params = scheduler.state_dict()
-    #scheduler_info = f"{scheduler_name} with params: {scheduler_params}"
+    plt.figure(figsize=(10, 5))
+    plt.plot(list_train_loss_total, label='Total training loss', color='blue')
+    plt.plot(list_valid_loss_total, label='Total valid loss', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('total loss')
+    plt.title('Total loss for Training and Validation Over Epochs')
+    plt.legend()
+    plt.grid(True)
+    
+    writer.add_figure('Total loss for Training and Validation Over Epochs', plt.gcf())
     
     writer.add_text('Configuration', f"Last epoch: {last_epoch+1}, Best epoch: {best_epoch+1}, Learning Rate: {config['learning_rate']}, Scheduler: None, Batch Size: {config['batch_size']}, \
                     dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['layers_encoder']}, Decoder Layers: {config['layers_decoder']}, heads: {config['heads']}, \
                     max_len: {config['max_len']}")
     
-            
-    ################
-    #TEST LOOP
-    ################     
-    model.eval()
-    predicted_values_test = np.zeros(len(test_dataloader.dataset))
-    actual_values_test = np.zeros(len(test_dataloader.dataset))
-    #predicted_structures_test = np.zeros(len(test_dataloader.dataset))
-    #actual_structures_test = np.zeros(len(test_dataloader.dataset))
+    cm_valid = confusion_matrix(actual_num_hairpins_valid, best_predicted_num_hairpins_valid)
+    cm_valid_list = cm_valid.tolist()
+    with open('confusion_matrix_valid.json', 'w') as f:
+        json.dump(cm_valid_list, f)
 
-    it=0
-    running_ce=0
-    with torch.no_grad():
-        for batch in test_dataloader:
-            sq, mfe, structure, mask = batch
-            sq, structure, mask = sq.to(device), structure.to(device), mask.to(device)
-            
-            mfes, structures, structures_prob = model(sq, mask)
-            pred = mfes.detach().cpu().numpy()
-            act = mfe.detach().cpu().numpy()
-            #act_structure = structure.detach().cpu().numpy()
-                
-            predicted_values_test[it*len(pred):(it+1)*len(pred)] = pred.flatten()
-            actual_values_test[it*len(act):(it+1)*len(act)] = act.flatten()
-            
-            output_reshaped = structures.contiguous().view(-1, config['target_vocab_size'])
-            target_reshaped = structure.contiguous().view(-1) 
-                    
-            predicted_indices = torch.argmax(structures_prob, dim=-1)
-                        
-            loss_custom = custom_loss(output_reshaped, target_reshaped, predicted_indices)
-            
-            #loss_ce = loss_function_structure(output_reshaped, target_reshaped)
-                
-            running_ce += loss_custom.item()
-            
-            #predicted_indices = torch.argmax(structures_prob, dim=-1)  
-            #predicted_indices = predicted_indices.detach().cpu().numpy()
-            
-            #predicted_indices_list = predicted_indices.tolist()
-            #act_structure_list = act_structure.tolist()
-                
-            #predicted_structures_test[it*len(pred_structures):(it+1)*len(pred_structures)] = predicted_indices_list
-            #actual_structures_test[it*len(act_structure):(it+1)*len(act_structure)] = act_structure_list
-            it+=1
-        
-    mse_test = mean_squared_error(actual_values_test, predicted_values_test)
-    #ce_test = log_loss(actual_structures_test, predicted_structures_test)
-    ce_test = running_ce/len(test_dataloader.dataset)
-    print(f'MSE: {mse_test}, CE: {ce_test}')
-        
-    plot_predvsactual(writer, actual_values_test, predicted_values_test, 0, mse_test, "Test")
     
-    ###
+    ################
     #Closing writer
-    ###
+    ################
     writer.close() 
     
     ################
-    #Hyperparam tune based on minimizing sum of both losses.
+    #Hyperparam tune based on minimizing sum of all losses.
     ################  
-    return best_valid_loss
+    return best_valid_loss, best_model_path
         
-def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str):
+def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str, measurement: str):
         #Plot predicted vs actual for train data every 20 epoch
         plt.figure(figsize=(8, 8))
         plt.scatter(actual, pred, alpha=0.5)
-        plt.xlabel('Actual MFE')
-        plt.ylabel('Predicted MFE')
-        plt.title('Predicted vs Actual MFE')
+        plt.xlabel(f'Actual {measurement}')
+        plt.ylabel(f'Predicted {measurement}')
+        plt.title(f'Predicted vs Actual {measurement}')
         plt.grid(True)
         
         if data_origin != "Test":
             plt.text(x=0.05, y=0.95, s=f'Epoch: {epoch}', transform=plt.gca().transAxes, fontsize=12, ha='left', va='top')
         plt.text(x=0.05, y=0.85, s=f'MSE: {mse:.4f}', transform=plt.gca().transAxes, fontsize=12, ha='left', va='top')
 
-        writer.add_figure(f'{data_origin} data: Predicted vs Actual MFE', plt.gcf(), epoch)            
+        writer.add_figure(f'{data_origin} data: Predicted vs Actual {measurement}', plt.gcf(), epoch)
+        
+        
+def evaluate_model(config, test_dataloader, model_path): 
+    model = transformer.Transformer(config_)  
+    model.load_state_dict(torch.load(model_path)['model_state_dict'])
+    model.eval()  
+    
+    predicted_mfes_test = np.zeros(len(test_dataloader.dataset))
+    actual_mfes_test = np.zeros(len(test_dataloader.dataset))
+
+    it=0
+    running_ce=0
+    with torch.no_grad():
+        for batch in test_dataloader:
+            sq, mfe, target, loop, mask = batch
+            sq, target, loop, mask = sq.to(device), target.to(device), loop.to(device), mask.to(device)
+            
+            mfes, predicted_structures, structures_prob, predicted_loops = model(sq, mask)
+            pred = mfes.detach().cpu().numpy()
+            act = mfe.detach().cpu().numpy()
+                
+            pred_mfe = mfes.detach().cpu().numpy()
+            act_mfe = mfe.detach().cpu().numpy()
+
+            pred_loop = predicted_loops.detach().cpu().numpy()
+            act_loop = loop.detach().cpu().numpy()
+
+            predicted_mfes_test[it*len(pred_mfe):(it+1)*len(pred_mfe)] = pred_mfe.flatten()            
+            actual_mfes_test[it*len(act_mfe):(it+1)*len(act_mfe)] = act_mfe.flatten()
+                    
+            predicted_indices = torch.argmax(structures_prob, dim=-1)
+                        
+            loss_custom = custom_loss(predicted_structures, target, predicted_indices)
+            
+            running_ce += loss_custom.item()
+            
+            it+=1
+        
+    mse_test_mfe = mean_squared_error(actual_values_test, predicted_values_test)
+    ce_test = running_ce/len(test_dataloader.dataset)
+    print(f'MSE-mfe: {mse_test}, MSE-loop: {mse_test_loop}, CE: {ce_test}')
+        
+    plot_predvsactual(writer, actual_mfes_test, predicted_values_test, 0, mse_test_mfe, "Test", "mfe")

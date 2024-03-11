@@ -10,7 +10,7 @@ class BucketDataLoader(DataLoader):
     def collate_fn(self, batch):
         batch.sort(key=lambda x: len(x[0]), reverse=True)
 
-        sequences, mfe, structures = zip(*batch)
+        sequences, mfe, structures, num_hairpins, avg_len = zip(*batch)
         max_len = len(sequences[0])
 
         padded_sequences = []
@@ -27,9 +27,17 @@ class BucketDataLoader(DataLoader):
             
         padded_sequences = torch.stack(padded_sequences)
         padded_structures = torch.stack(padded_structures)
+        
         mfe_tensor = torch.tensor(mfe)
         mfe_tensor = mfe_tensor.unsqueeze(1)
+        
+        num_hairpins_tensor = torch.tensor(num_hairpins)
+        num_hairpins_tensor = num_hairpins_tensor.unsqueeze(1)
+        
+        avg_len_tensor = torch.tensor(avg_len)
+        avg_len_tensor = avg_len_tensor.unsqueeze(1)
+        
         mask = (padded_sequences == self.config['pad_value'])
                 
-        return padded_sequences, mfe_tensor, padded_structures, mask
+        return padded_sequences, mfe_tensor, padded_structures, num_hairpins_tensor, avg_len_tensor, mask
 
