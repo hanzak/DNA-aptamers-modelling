@@ -2,7 +2,7 @@ import torch
 def get_config():
     return {
         "batch_size": 128,
-        "num_epochs": 80,
+        "num_epochs": 50,
         "learning_rate": 2e-4,
         "d_model": 256,
         "layers_encoder": 2,

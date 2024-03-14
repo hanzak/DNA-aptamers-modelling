@@ -4,18 +4,6 @@ import numpy as np
 import random
 from torch.utils.data import Dataset, Subset, ConcatDataset
 
-random.seed(10)
-
-class MyDataset(Dataset):
-    def __init__(self, data):
-        self.data = data
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
 def data_split(data):
     dataset_size = len(data)
 
@@ -26,22 +14,6 @@ def data_split(data):
     train_dataset, val_dataset, test_dataset = random_split(data, [train_size, val_size, test_size])
 
     return train_dataset, val_dataset, test_dataset
-
-def augment_reverse(data, p):
-    reversed_data = []
-    for i in range(len(data)):
-        sq, mfe, struct, nh = data[i]
-        if random.random() > (1-p):
-            reversed_sq = sq[::-1]
-            reversed_data.append((reversed_sq, mfe, struct, nh))
-            
-    reversed_dataset = MyDataset(reversed_data)
-    
-    augmented_dataset = ConcatDataset([data.dataset, reversed_dataset])
-    
-    augmented_subset = Subset(augmented_dataset, list(range(len(augmented_dataset))))
-    
-    return augmented_subset
     
 def count_hairpins(data):
     hairpins = []

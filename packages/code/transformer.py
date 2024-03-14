@@ -271,7 +271,7 @@ def train_model(config, train_dataloader, valid_dataloader):
     ################
     #Setting up variables
     ################
-    early_stop = 15
+    early_stop = 5
     best_valid_loss = 1e9
     counter = 0
     train_loss_mse_mfe = []
@@ -386,14 +386,14 @@ def train_model(config, train_dataloader, valid_dataloader):
             loss_custom = custom_loss(predicted_structures, target, predicted_indices)
                         
             
-            if epoch < normalize_epochs:                                        
+            if epoch <= normalize_epochs:                                        
                 baseline_mse_mfe += loss_mfe.item()
                 baseline_mse_num_hairpins += loss_num_hairpins.item()
                 baseline_ce += loss_custom.item()
 
                 total_loss = loss_mfe + loss_custom + loss_num_hairpins 
             else:
-                if epoch == normalize_epochs and not normalized:
+                if not normalized:
                     num_batches = len(train_dataloader) * normalize_epochs
                     baseline_mse_mfe /= num_batches
                     baseline_mse_num_hairpins /= num_batches
@@ -546,7 +546,7 @@ def train_model(config, train_dataloader, valid_dataloader):
         elif normalized:
             counter += 1
         
-        if counter >= early_stop:
+        if counter > early_stop:
             print(f"Stopped early at epoch {epoch+1}")
             plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
             plot_predvsactual(writer, actual_num_hairpins_valid, best_predicted_num_hairpins_valid, epoch, best_mse_valid_num_hairpins, "Valid", "num_hairpins")

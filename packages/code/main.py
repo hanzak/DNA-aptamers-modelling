@@ -60,8 +60,6 @@ def get_data_structures(data_name):
         data_for_transformer = dataset.count_hairpins(data_for_transformer)
         
         train, valid, test = dataset.data_split(data_for_transformer)
-        
-        train = dataset.augment_reverse(train, 0.2)
 
         with open(f"data/splits/train_{data_name}_struct.pkl", 'wb') as f:
             pickle.dump(train, f)
@@ -102,7 +100,7 @@ def hyperparam_tune(objective_function):
     results = gp_minimize(
         func=objective_function,
         dimensions=hyperparameter_space,
-        n_calls=50,  
+        n_calls=40,  
         random_state=0
     )
 
@@ -126,17 +124,19 @@ def mock_train_model(config, train_dataloader, valid_dataloader):
 """
         
 
-data_name = "5M"
+data_name = "250k"
 
 config_['data_size'] = data_name
 
-train, valid, test = get_data_structures(config_['data_size'])
+train, valid, test = get_data_structures("250k")
+train, valid, test = get_data_structures("2p5M")
+train, valid, test = get_data_structures("5M")
 
-train_dataloader = BucketDataLoader(train, config_)
-valid_dataloader = BucketDataLoader(valid, config_)
-test_dataloader = BucketDataLoader(test, config_)
+#train_dataloader = BucketDataLoader(train, config_)
+#valid_dataloader = BucketDataLoader(valid, config_)
+#test_dataloader = BucketDataLoader(test, config_)
 
-transformer.train_model(config_, train_dataloader, valid_dataloader)
+#transformer.train_model(config_, train_dataloader, valid_dataloader)
 
 
 #hyperparam_tune(objective_function)
