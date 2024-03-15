@@ -128,9 +128,7 @@ data_name = "250k"
 
 config_['data_size'] = data_name
 
-train, valid, test = get_data_structures("250k")
-train, valid, test = get_data_structures("2p5M")
-train, valid, test = get_data_structures("5M")
+train, valid, test = get_data_structures("7p5M")
 
 #train_dataloader = BucketDataLoader(train, config_)
 #valid_dataloader = BucketDataLoader(valid, config_)
