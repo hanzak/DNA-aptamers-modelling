@@ -59,6 +59,79 @@ class PositionalEncoding(nn.Module):
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False)
         return self.dropout(x)
     
+class RelativeGlobalAttention(nn.Module):
+    def __init__(self, d_model, num_heads, max_len, dropout):
+        super().__init__()
+        d_head, remainder = divmod(d_model, num_heads)
+        if remainder:
+            raise ValueError(
+                "incompatible `d_model` and `num_heads`"
+            )
+        self.max_len = max_len
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.key = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        self.query = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.Er = nn.Parameter(torch.randn(max_len, d_head))
+        self.register_buffer(
+            "mask",
+            torch.tril(torch.ones(max_len, max_len))
+                .unsqueeze(0).unsqueeze(0)
+        )
+        # self.mask.shape = (1, 1, max_len, max_len)
+
+    def forward(self, x):
+        # x.shape == (batch_size, seq_len, d_model)
+        batch_size, seq_len, _ = x.shape
+
+        if seq_len > self.max_len:
+            raise ValueError(
+                "sequence length exceeds model capacity"
+            )
+
+        k_t = self.key(x).reshape(batch_size, seq_len, self.num_heads, -1).permute(0, 2, 3, 1)
+        # k_t.shape = (batch_size, num_heads, d_head, seq_len)
+        v = self.value(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
+        q = self.query(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
+        # shape = (batch_size, num_heads, seq_len, d_head)
+
+        start = self.max_len - seq_len
+        Er_t = self.Er[start:, :].transpose(0, 1)
+        # Er_t.shape = (d_head, seq_len)
+        QEr = torch.matmul(q, Er_t)
+        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
+        Srel = self.skew(QEr)
+        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
+
+        QK_t = torch.matmul(q, k_t)
+        # QK_t.shape = (batch_size, num_heads, seq_len, seq_len)
+        attn = (QK_t + Srel) / math.sqrt(q.size(-1))
+        mask = self.mask[:, :, :seq_len, :seq_len]
+        # mask.shape = (1, 1, seq_len, seq_len)
+        attn = attn.masked_fill(mask == 0, float("-inf"))
+        # attn.shape = (batch_size, num_heads, seq_len, seq_len)
+        attn = F.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v)
+        # out.shape = (batch_size, num_heads, seq_len, d_head)
+        out = out.transpose(1, 2)
+        # out.shape == (batch_size, seq_len, num_heads, d_head)
+        out = out.reshape(batch_size, seq_len, -1)
+        # out.shape == (batch_size, seq_len, d_model)
+        return self.dropout(out)
+
+    def skew(self, QEr):
+        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
+        padded = F.pad(QEr, (1, 0))
+        # padded.shape = (batch_size, num_heads, seq_len, 1 + seq_len)
+        batch_size, num_heads, num_rows, num_cols = padded.shape
+        reshaped = padded.reshape(batch_size, num_heads, num_cols, num_rows)
+        # reshaped.size = (batch_size, num_heads, 1 + seq_len, seq_len)
+        Srel = reshaped[:, :, 1:, :]
+        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
+        return Srel
+    
 
 class CustomLoss(nn.Module):
     def __init__(self, penalty_weight, ce_weights):
@@ -179,8 +252,9 @@ class Transformer(nn.Module):
         
         self.model_type = "Transformer"
         
-        self.positional_encoder = PositionalEncoding(
+        self.relative_attention = RelativeGlobalAttention(
             d_model = self.d_model,
+            num_heads = self.heads,
             max_len = self.max_len,
             dropout = self.dropout
         )
@@ -210,19 +284,18 @@ class Transformer(nn.Module):
         self.mfe_out = nn.Linear(self.d_model, 1)
         self.decoder_out = nn.Linear(self.d_model, self.target_vocab_size)
         self.num_hairpins_out = nn.Linear(self.d_model, 1)  
-        #self.avg_len_out = nn.Linear(self.d_model, 1)  
         
         self.init_weights()
         
         self.to(self.device)
                                      
-    def forward(self, src, src_mask):
-        target = src
-        
+    def forward(self, src, target, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, memory_key_padding_mask):        
         batchsize = src.size(0)
         
+        device = src.device
+                
         src = self.embedding(src) * math.sqrt(self.d_model)
-        src = self.positional_encoder(src)
+        src = self.relative_attention(src)
         
         """
         sequence_lengths = (src != 0).sum(dim=1)
@@ -238,11 +311,12 @@ class Transformer(nn.Module):
         src_mask = torch.cat([src_mask,extend_mask], dim=1)
         """
         
-        encoder_output = self.transformer_encoder(src, src_key_padding_mask=src_mask)
+        encoder_output = self.transformer_encoder(src,mask=src_mask, src_key_padding_mask=src_padding_mask)
 
         target = self.embedding(target) * math.sqrt(self.d_model)
-        target = self.positional_encoder(target)
-        decoder_output = self.transformer_decoder(target, encoder_output)
+        target = self.relative_attention(target)
+                
+        decoder_output = self.transformer_decoder(target, encoder_output, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)
 
         decoded = self.decoder_out(decoder_output)
         decoded_probs = F.softmax(decoded, dim=-1)  
@@ -287,9 +361,9 @@ def train_model(config, train_dataloader, valid_dataloader):
     interval=10
     start_epoch = 0
     n_epochs = config['num_epochs']
-    normalize_epochs = 4
+    normalize_epochs = 3
     print_prediction=True
-    reverse_mapping = {1: '(', 2: ')', 3: '.'}
+    reverse_mapping = {1: '(', 2: ')', 3: '.', 4: '@', 5: '$'}
     
     
     predicted_mfes_train = np.zeros(len(train_dataloader.dataset))
@@ -309,10 +383,10 @@ def train_model(config, train_dataloader, valid_dataloader):
     ################
     model = Transformer(config)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-    ce_weights = torch.tensor([0, 2.0, 2.0, 1.0])
+    ce_weights = torch.tensor([0, 2.0, 2.0, 1.0, 1.0, 1.0])
     ce_weights = ce_weights.to(device)
     loss_function_mse = nn.MSELoss()
-    custom_loss = CustomLoss(1.0, ce_weights)   
+    custom_loss = CustomLoss(2.0, ce_weights)   
     
     ################
     #Tensorboard output folder and init
@@ -368,22 +442,31 @@ def train_model(config, train_dataloader, valid_dataloader):
         it=0
         running_ce=0
         for i,batch in enumerate(batch_iterator):
-            sq, mfe, target, num_hairpins, mask = batch
+            sq, mfe, target, num_hairpins = batch
             
             #when adding custom loss, need to convert this to float for some reasons.
             mfe=mfe.float()
             num_hairpins=num_hairpins.float()
             
-            sq, mfe, target, num_hairpins, mask = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device), mask.to(device)
-            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq, mask)
+            sq, mfe, target, num_hairpins = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device)
+            
+            target_input = target[:, :-1]
+            
+            src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = create_mask(sq, target_input)
+            
+            src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = src_mask.to(device), tgt_mask.to(device), src_padding_mask.to(device), tgt_padding_mask.to(device)
+            
+            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq,target_input,src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
         
             optimizer.zero_grad()
             
             predicted_indices = torch.argmax(structures_prob, dim=-1)
+            
+            target_out = target[:, 1:]
 
             loss_mfe = loss_function_mse(mfes, mfe)
             loss_num_hairpins = loss_function_mse(predicted_num_hairpins, num_hairpins)
-            loss_custom = custom_loss(predicted_structures, target, predicted_indices)
+            loss_custom = custom_loss(predicted_structures, target_out, predicted_indices)
                         
             
             if epoch <= normalize_epochs:                                        
@@ -428,7 +511,7 @@ def train_model(config, train_dataloader, valid_dataloader):
         mse_train_mfe = mean_squared_error(actual_mfes_train, predicted_mfes_train)
         mse_train_num_hairpins = mean_squared_error(actual_num_hairpins_train, predicted_num_hairpins_train)
         
-        ce_train = running_ce/len(train_dataloader)
+        ce_train = running_ce/len(list(train_dataloader))
         total_train_loss = ce_train + mse_train_mfe + mse_train_num_hairpins
         train_loss_mse_mfe.append(mse_train_mfe)
         train_loss_mse_num_hairpins.append(mse_train_num_hairpins)
@@ -445,16 +528,24 @@ def train_model(config, train_dataloader, valid_dataloader):
         running_ce=0
         with torch.no_grad():
             for batch in batch_iterator_valid:                
-                sq, mfe, target, num_hairpins, mask = batch                
-                sq, mfe, target, num_hairpins, mask = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device), mask.to(device)
+                sq, mfe, target, num_hairpins = batch                
+                sq, mfe, target, num_hairpins = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device)
                 
-                mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq, mask)
+                target_input = target[:, :-1]
             
+                src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = create_mask(sq, target_input)
+            
+                src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = src_mask.to(device), tgt_mask.to(device), src_padding_mask.to(device), tgt_padding_mask.to(device)
+            
+                mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq,target_input,src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
+                    
                 predicted_indices = torch.argmax(structures_prob, dim=-1)
+            
+                target_out = target[:, 1:]
                 
                 if print_prediction:
                     predicted = predicted_indices[0:10].tolist()
-                    target_structure = target[0:10].tolist()
+                    target_structure = target_out[0:10].tolist()
                     decoded_predicted_structures = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in predicted]
                     target_structure_10 = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in target_structure]
                     
@@ -471,7 +562,7 @@ def train_model(config, train_dataloader, valid_dataloader):
                     print_prediction=False
                 
                         
-                loss_custom = custom_loss(predicted_structures, target, predicted_indices)                
+                loss_custom = custom_loss(predicted_structures, target_out, predicted_indices)                
                 running_ce += loss_custom.item()
 
                 pred_mfe = mfes.detach().cpu().numpy()
@@ -495,7 +586,7 @@ def train_model(config, train_dataloader, valid_dataloader):
         mse_valid_mfe = mean_squared_error(actual_mfes_valid, predicted_mfes_valid)
         mse_valid_num_hairpins = mean_squared_error(actual_num_hairpins_valid, predicted_num_hairpins_valid)
 
-        ce_valid = running_ce/len(valid_dataloader)
+        ce_valid = running_ce/len(list(valid_dataloader))
         total_valid_loss = ce_valid + mse_valid_mfe + mse_valid_num_hairpins 
         valid_loss_mse_mfe.append(mse_valid_mfe)
         valid_loss_mse_num_hairpins.append(mse_valid_num_hairpins)
@@ -642,10 +733,11 @@ def evaluate_model(config, test_dataloader, model_path):
     model.eval()  
     device = config['device']
     
-    ce_weights = torch.tensor([0.0, 1.0, 1.0, 1.0])
+    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 1.0, 1.0])
     ce_weights = ce_weights.to(device)
     loss_function_mse = nn.MSELoss()
     custom_loss = CustomLoss(1.0, ce_weights)   
+    reverse_mapping = {1: '(', 2: ')', 3: '.', 4: '@', 5: '$'}
     
     predicted_mfes_test = np.zeros(len(test_dataloader.dataset))
     actual_mfes_test = np.zeros(len(test_dataloader.dataset))
@@ -654,16 +746,43 @@ def evaluate_model(config, test_dataloader, model_path):
 
     it=0
     running_ce=0
+    print_prediction=True
     with torch.no_grad():
         for batch in test_dataloader:            
-            sq, mfe, target, num_hairpins, mask = batch                
-            sq, mfe, target, num_hairpins, mask = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device), mask.to(device)
+            sq, mfe, target, num_hairpins = batch                            
+            sq, mfe, target, num_hairpins = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device)
             
-            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq, mask)
+            target_input = target[:, :-1]
+            
+            src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = create_mask(sq, target_input)
+            
+            src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = src_mask.to(device), tgt_mask.to(device), src_padding_mask.to(device), tgt_padding_mask.to(device)
+            
+            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq,target_input,src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
             
             predicted_indices = torch.argmax(structures_prob, dim=-1)
+            
+            if print_prediction:
+                predicted = predicted_indices[0:10].tolist()
+                target_structure = target[0:10].tolist()
+                decoded_predicted_structures = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in predicted]
+                target_structure_10 = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in target_structure]
+                    
+                print("Predicted structures: ")
+                for j,decoded_structure in enumerate(decoded_predicted_structures):
+                    print(decoded_structure)
+                    print(mfes[j])
+                        
+                print("Target structures: ")
+                for j,target_ in enumerate(target_structure_10):
+                    print(target_)
+                    print(mfe[j])
+                        
+                print_prediction=False
+                
+            target_out = target[:, 1:]
                       
-            loss_custom = custom_loss(predicted_structures, target, predicted_indices) 
+            loss_custom = custom_loss(predicted_structures, target_out, predicted_indices) 
             running_ce += loss_custom.item()
 
             pred_mfe = mfes.detach().cpu().numpy()
@@ -688,10 +807,59 @@ def evaluate_model(config, test_dataloader, model_path):
     
     print(f'MSE-mfe: {mse_test_mfe}, CE: {ce_test}, MSE-num_hairpins: {mse_test_num_hairpins}')
     
-    plot_predvsactual(writer, actual_mfes_test, predicted_values_test, 0, mse_test_mfe, "Test", "mfe")
-    plot_predvsactual(writer, actual_num_hairpins_test, predicted_num_hairpins_test, 0, mse_test_num_hairpins, "Test", "num_hairpins")
+    #plot_predvsactual(writer, actual_mfes_test, predicted_values_test, 0, mse_test_mfe, "Test", "mfe")
+    #plot_predvsactual(writer, actual_num_hairpins_test, predicted_num_hairpins_test, 0, mse_test_num_hairpins, "Test", "num_hairpins")
     
     return predicted_mfes_test, actual_mfes_test
 
+
     
     
+def generate_square_subsequent_mask(sz):
+    mask = (torch.triu(torch.ones((sz, sz)) == 1)).transpose(0, 1)
+    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+    return mask
+
+
+def create_mask(src, tgt):
+    IGNORE_VALUE = -1e9  
+    
+    src_seq_len = src.shape[1]
+    tgt_seq_len = tgt.shape[1]
+
+    tgt_mask = generate_square_subsequent_mask(tgt_seq_len)
+    src_mask = torch.zeros(src_seq_len, src_seq_len)
+
+    src_padding_mask = (src == 0)
+    tgt_padding_mask = (tgt == 0)
+    
+    src_padding_mask = src_padding_mask.float()
+    tgt_padding_mask = tgt_padding_mask.float()
+    
+    src_padding_mask[src_padding_mask == 1] = IGNORE_VALUE
+    tgt_padding_mask[tgt_padding_mask == 1] = IGNORE_VALUE
+        
+    return src_mask, tgt_mask, src_padding_mask, tgt_padding_mask
+
+"""
+def generate_secondary_structures_batch(model, batch, eos_token_id, pad_token_id):
+        model.eval()
+        with torch.no_grad():
+            sq, mfe, target, num_hairpins, mask = batch     
+            sq, mfe, target, num_hairpins, mask = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device), mask.to(device)
+            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq, mask)
+            
+            predictions = torch.argmax(structures_prob, dim=-1)
+            predicted_structures = []
+
+            for i in range(predictions.shape[0]):
+                predicted_structure = []
+                for token_id in predictions[i]:
+                    if token_id.item() == eos_token_id:
+                        break
+                    elif token_id.item() != pad_token_id:
+                        predicted_structure.append(token_id.item())
+                predicted_structures.append(predicted_structure)
+
+        return predicted_structures
+"""
