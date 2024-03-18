@@ -82,6 +82,10 @@ def objective_function(hyperparameters):
     config_['batch_size'] = int(hyperparameters[1])
     config_['dropout'] = hyperparameters[2]
     
+    train_dataloader = BucketDataLoader(train, config_)
+    valid_dataloader = BucketDataLoader(valid, config_)
+    test_dataloader = BucketDataLoader(test, config_)
+    
     valid_loss, model_path = transformer.train_model(config_, train_dataloader, valid_dataloader)
     
     if valid_loss < best_validation_loss:
@@ -92,16 +96,16 @@ def objective_function(hyperparameters):
 
 def hyperparam_tune(objective_function):
     hyperparameter_space = [
-        Real(1e-6, 1e-2, prior='log-uniform', name='learning_rate'),
+        Real(1e-5, 1e-2, prior='log-uniform', name='learning_rate'),
         Categorical([128, 256, 512], name='batch_size'),
-        Real(0.1, 0.5, name='dropout')
+        Real(0.1, 0.3, name='dropout')
     ]
 
     results = gp_minimize(
         func=objective_function,
         dimensions=hyperparameter_space,
-        n_calls=40,  
-        random_state=0
+        n_calls=35,  
+        random_state=42
     )
 
     results_dict = {
@@ -128,13 +132,14 @@ data_name = "250k"
 
 config_['data_size'] = data_name
 
-train, valid, test = get_data_structures("7p5M")
+train, valid, test = get_data_structures(data_name)
 
-#train_dataloader = BucketDataLoader(train, config_)
-#valid_dataloader = BucketDataLoader(valid, config_)
-#test_dataloader = BucketDataLoader(test, config_)
+train_dataloader = BucketDataLoader(train, config_)
+valid_dataloader = BucketDataLoader(valid, config_)
+test_dataloader = BucketDataLoader(test, config_)
 
-#transformer.train_model(config_, train_dataloader, valid_dataloader)
+
+transformer.train_model(config_, train_dataloader, valid_dataloader)
 
 
 #hyperparam_tune(objective_function)
@@ -146,13 +151,13 @@ with open(f'data/data_generalisation_struct.pkl', 'rb') as file:
 new_data = []
 for d in data_gen:
     sq,_,_ = d
-    if len(sq)>100  and len(sq)<200:
+    if len(sq)>50  and len(sq)<60:
         new_data.append(d)
         
 new_data = dataset.count_hairpins(new_data)
         
 test_dataloader = BucketDataLoader(new_data, config_)
-pred, act = transformer.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/2p5M/11-03-2024_041307_model_checkpoint.pth")
+pred, act = transformer.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/2p5M/18-03-2024_014631_model_checkpoint.pth")
 
 for i in range (len(pred)):
     print(f"pred: {pred[i]}, act: {act[i]}")
