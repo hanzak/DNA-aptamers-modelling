@@ -24,7 +24,68 @@ np.random.seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    
+class FIRE(nn.Module):
+    def __init__(self, num_heads=4, mlp_width=32, init_c=0.1, init_L=512., eps=1e-6):
+        """
+        FIRE attention bias module.
 
+        Args:
+        num_heads: number of attention heads.
+        mlp_width: Width of MLP.
+        init_c: initial value of log transformation parameter
+        init_L: initial value of thresholding parameter
+        eps: small constant for numerical stability
+        """
+        super(FIRE, self).__init__()
+
+        # Define the MLP layers
+        self.mlp = nn.Sequential(
+            nn.Linear(1, mlp_width),
+            nn.ReLU(),
+            nn.Linear(mlp_width, num_heads)
+        )
+
+        # Initialize c (log transformation parameter)
+        self.c = nn.Parameter(torch.tensor(init_c))
+
+        # Initialize L (threshold)
+        self.init_L = nn.Parameter(torch.tensor(init_L), requires_grad=False)
+        # Learn a multiplier to L
+        self.L_multiplier = nn.Parameter(torch.tensor(1.0))
+
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor):
+        """
+        Compute FIRE attention bias.
+
+        Args:
+        x: input sequence,
+        shape [bsz, num_heads, seq_len, hidden_dim]
+
+        Returns:
+        attention bias,
+        shape [1, num_heads, seq_len, seq_len]
+        """
+        seq_length = x.size(1)
+        positions = torch.arange(seq_length, dtype=torch.float, device=x.device)
+        rel_distance = positions[:, None] - positions[None, :]
+
+        # Thresholding the normalizer
+        threshold = torch.abs(self.L_multiplier * self.init_L)
+        pos_normalizer = torch.max(positions, threshold)
+        pos_normalizer = pos_normalizer[:, None]
+
+        # Amplifying differences among local positions with log transform
+        rel_distance = torch.log(torch.abs(self.c * rel_distance) + 1)
+        pos_normalizer = torch.log(torch.abs(self.c * pos_normalizer) + 1) + self.eps
+
+        # Progressive interpolation
+        normalized_distance = rel_distance / pos_normalizer
+        fire_bias = self.mlp(normalized_distance.unsqueeze(-1))
+        fire_bias = fire_bias.unsqueeze(0).permute(0, 3, 1, 2)
+        return fire_bias
 
 class PositionalEncoding(nn.Module):
 
@@ -58,79 +119,6 @@ class PositionalEncoding(nn.Module):
         #we don't want the model to learn this
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False)
         return self.dropout(x)
-    
-class RelativeGlobalAttention(nn.Module):
-    def __init__(self, d_model, num_heads, max_len, dropout):
-        super().__init__()
-        d_head, remainder = divmod(d_model, num_heads)
-        if remainder:
-            raise ValueError(
-                "incompatible `d_model` and `num_heads`"
-            )
-        self.max_len = max_len
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.key = nn.Linear(d_model, d_model)
-        self.value = nn.Linear(d_model, d_model)
-        self.query = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.Er = nn.Parameter(torch.randn(max_len, d_head))
-        self.register_buffer(
-            "mask",
-            torch.tril(torch.ones(max_len, max_len))
-                .unsqueeze(0).unsqueeze(0)
-        )
-        # self.mask.shape = (1, 1, max_len, max_len)
-
-    def forward(self, x):
-        # x.shape == (batch_size, seq_len, d_model)
-        batch_size, seq_len, _ = x.shape
-
-        if seq_len > self.max_len:
-            raise ValueError(
-                "sequence length exceeds model capacity"
-            )
-
-        k_t = self.key(x).reshape(batch_size, seq_len, self.num_heads, -1).permute(0, 2, 3, 1)
-        # k_t.shape = (batch_size, num_heads, d_head, seq_len)
-        v = self.value(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
-        q = self.query(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
-        # shape = (batch_size, num_heads, seq_len, d_head)
-
-        start = self.max_len - seq_len
-        Er_t = self.Er[start:, :].transpose(0, 1)
-        # Er_t.shape = (d_head, seq_len)
-        QEr = torch.matmul(q, Er_t)
-        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
-        Srel = self.skew(QEr)
-        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
-
-        QK_t = torch.matmul(q, k_t)
-        # QK_t.shape = (batch_size, num_heads, seq_len, seq_len)
-        attn = (QK_t + Srel) / math.sqrt(q.size(-1))
-        mask = self.mask[:, :, :seq_len, :seq_len]
-        # mask.shape = (1, 1, seq_len, seq_len)
-        attn = attn.masked_fill(mask == 0, float("-inf"))
-        # attn.shape = (batch_size, num_heads, seq_len, seq_len)
-        attn = F.softmax(attn, dim=-1)
-        out = torch.matmul(attn, v)
-        # out.shape = (batch_size, num_heads, seq_len, d_head)
-        out = out.transpose(1, 2)
-        # out.shape == (batch_size, seq_len, num_heads, d_head)
-        out = out.reshape(batch_size, seq_len, -1)
-        # out.shape == (batch_size, seq_len, d_model)
-        return self.dropout(out)
-
-    def skew(self, QEr):
-        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
-        padded = F.pad(QEr, (1, 0))
-        # padded.shape = (batch_size, num_heads, seq_len, 1 + seq_len)
-        batch_size, num_heads, num_rows, num_cols = padded.shape
-        reshaped = padded.reshape(batch_size, num_heads, num_cols, num_rows)
-        # reshaped.size = (batch_size, num_heads, 1 + seq_len, seq_len)
-        Srel = reshaped[:, :, 1:, :]
-        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
-        return Srel
     
 
 class CustomLoss(nn.Module):
@@ -252,13 +240,12 @@ class Transformer(nn.Module):
         
         self.model_type = "Transformer"
         
-        self.relative_attention = RelativeGlobalAttention(
+        self.positional_encoder = PositionalEncoding(
             d_model = self.d_model,
-            num_heads = self.heads,
             max_len = self.max_len,
             dropout = self.dropout
         )
-        
+                        
         self.embedding = nn.Embedding(self.src_vocab_size, self.d_model)
         
         self.encoder_layer = nn.TransformerEncoderLayer(
@@ -295,7 +282,7 @@ class Transformer(nn.Module):
         device = src.device
                 
         src = self.embedding(src) * math.sqrt(self.d_model)
-        src = self.relative_attention(src)
+        src = self.positional_encoder(src)
         
         """
         sequence_lengths = (src != 0).sum(dim=1)
@@ -314,7 +301,7 @@ class Transformer(nn.Module):
         encoder_output = self.transformer_encoder(src,mask=src_mask, src_key_padding_mask=src_padding_mask)
 
         target = self.embedding(target) * math.sqrt(self.d_model)
-        target = self.relative_attention(target)
+        target = self.positional_encoder(target)
                 
         decoder_output = self.transformer_decoder(target, encoder_output, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)
 
@@ -345,7 +332,7 @@ def train_model(config, train_dataloader, valid_dataloader):
     ################
     #Setting up variables
     ################
-    early_stop = 5
+    early_stop = 3
     best_valid_loss = 1e9
     counter = 0
     train_loss_mse_mfe = []
@@ -386,7 +373,7 @@ def train_model(config, train_dataloader, valid_dataloader):
     ce_weights = torch.tensor([0, 2.0, 2.0, 1.0, 1.0, 1.0])
     ce_weights = ce_weights.to(device)
     loss_function_mse = nn.MSELoss()
-    custom_loss = CustomLoss(2.0, ce_weights)   
+    custom_loss = CustomLoss(1.0, ce_weights)   
     
     ################
     #Tensorboard output folder and init
