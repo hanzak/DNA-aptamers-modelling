@@ -18,8 +18,8 @@ class BucketDataLoader(DataLoader):
 
         padded_sequences = []
         for sequence in sequences:
-            sequence = sequence + str(self.config['EOS'])
-            sequence_tensor = torch.tensor([{'A': 1, 'C': 2, 'G': 3, 'T': 4, '$': 5}[nuc] for nuc in sequence], dtype=torch.long)
+            sequence = str(self.config['SOS']) + sequence + str(self.config['EOS'])
+            sequence_tensor = torch.tensor([{'A': 1, 'C': 2, 'G': 3, 'T': 4, '@': 5, '$': 6}[nuc] for nuc in sequence], dtype=torch.long)
             padded_sequence = F.pad(sequence_tensor, (0, max_len - len(sequence_tensor)), value=self.config['pad_value'])
             padded_sequences.append(padded_sequence)
                         

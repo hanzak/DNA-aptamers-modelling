@@ -3,16 +3,28 @@ import config
 import dataset 
 import pickle
 import os
+import torch
 from BucketDataLoader import BucketDataLoader
 import numpy as np
 import json
 import random
 from NpEncoder import *
+from torch.utils.data import Dataset, ConcatDataset
 
 config_ = config.get_config()
 
 best_validation_loss = float(1e9)
 best_model_path = None
+
+class MyDataset(Dataset):
+    def __init__(self, data):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 def check_file(file_path):
     return os.path.isfile(file_path) and os.stat(file_path).st_size > 0
@@ -56,7 +68,7 @@ def get_data_structures(data_name):
             raise FileNotFoundError(f"data_{data_name}_struct.pkl doesn't exist or is empty")
         with open(f'data/data_{data_name}_struct.pkl', 'rb') as file:
             data_for_transformer = pickle.load(file)
-        
+                    
         data_for_transformer = dataset.count_hairpins(data_for_transformer)
         
         train, valid, test = dataset.data_split(data_for_transformer)
@@ -68,6 +80,30 @@ def get_data_structures(data_name):
         with open(f"data/splits/test_{data_name}_struct.pkl", 'wb') as f:
             pickle.dump(test, f) 
     return train, valid, test
+
+"""
+def get_data_with_priming(data_name):
+    if check_file(f"data/data_{data_name}_struct.pkl") == False:
+        raise FileNotFoundError(f"data_{data_name}_struct.pkl doesn't exist or is empty")
+    with open(f'data/data_{data_name}_struct.pkl', 'rb') as file:
+        data_for_transformer = pickle.load(file)
+            
+    if check_file(f"data/priming/data_priming_2p5M.pkl") == False:
+        raise FileNotFoundError(f"data_priming_{data_name}.pkl doesn't exist or is empty")
+    with open(f'data/priming/data_priming_2p5M.pkl', 'rb') as pfile:
+        priming = pickle.load(pfile)
+        
+    priming = dataset.count_hairpins(priming)
+    data_for_transformer = dataset.count_hairpins(data_for_transformer)
+        
+    train, valid, test = dataset.data_split(data_for_transformer)
+    
+    priming_dataset = MyDataset(priming)
+    
+    updated_train = ConcatDataset([train.dataset, priming_dataset])
+    
+    return updated_train, valid, test
+"""
 
 from skopt.space import Real, Integer, Categorical
 from skopt import gp_minimize
@@ -96,15 +132,15 @@ def objective_function(hyperparameters):
 
 def hyperparam_tune(objective_function):
     hyperparameter_space = [
-        Real(1e-5, 1e-2, prior='log-uniform', name='learning_rate'),
+        Real(1e-5, 1e-3, prior='log-uniform', name='learning_rate'),
         Categorical([128, 256, 512], name='batch_size'),
-        Real(0.1, 0.3, name='dropout')
+        Real(0.1, 0.4, name='dropout')
     ]
 
     results = gp_minimize(
         func=objective_function,
         dimensions=hyperparameter_space,
-        n_calls=35,  
+        n_calls=25,  
         random_state=42
     )
 
@@ -139,19 +175,19 @@ valid_dataloader = BucketDataLoader(valid, config_)
 test_dataloader = BucketDataLoader(test, config_)
 
 
-transformer.train_model(config_, train_dataloader, valid_dataloader)
+#transformer.train_model(config_, train_dataloader, valid_dataloader)
 
 
 #hyperparam_tune(objective_function)
 
-"""
-with open(f'data/data_generalisation_struct.pkl', 'rb') as file:
+
+with open(f'data/data_generalization.pkl', 'rb') as file:
     data_gen = pickle.load(file)
     
 new_data = []
 for d in data_gen:
     sq,_,_ = d
-    if len(sq)>50  and len(sq)<60:
+    if len(sq)>50  and len(sq)<61:
         new_data.append(d)
         
 new_data = dataset.count_hairpins(new_data)
@@ -159,6 +195,5 @@ new_data = dataset.count_hairpins(new_data)
 test_dataloader = BucketDataLoader(new_data, config_)
 pred, act = transformer.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/2p5M/18-03-2024_014631_model_checkpoint.pth")
 
-for i in range (len(pred)):
-    print(f"pred: {pred[i]}, act: {act[i]}")
-"""
+#for i in range (len(pred)):
+   # print(f"pred: {pred[i]}, act: {act[i]}")
