@@ -7,6 +7,3 @@ Haunui louis (haunui.louis@umontreal.ca)
 Hani Zaki (hani.zaki@umontreal.ca) 
 Yehao Yan (yehao.yan@umontreal.ca)
 
-# Transformer
-Transformer was trained on 250k randomly generated dna sequences of length 10 to 50.
-Trained model can be loaded from packages/model/transformer-250k-1050-1.pth. Model performance data can be accessed using tensordboard and tensorboard-transformer-250k-1050-1.0
