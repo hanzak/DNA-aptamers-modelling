@@ -10,11 +10,17 @@ import json
 import random
 from NpEncoder import *
 from torch.utils.data import Dataset, ConcatDataset
+from torch.nn.utils.rnn import pad_sequence
 
 config_ = config.get_config()
 
 best_validation_loss = float(1e9)
 best_model_path = None
+
+from skopt.space import Real, Integer, Categorical
+from skopt import gp_minimize
+
+np.int = int
 
 class MyDataset(Dataset):
     def __init__(self, data):
@@ -105,11 +111,6 @@ def get_data_with_priming(data_name):
     return updated_train, valid, test
 """
 
-from skopt.space import Real, Integer, Categorical
-from skopt import gp_minimize
-
-np.int = int
-
 def objective_function(hyperparameters):
     global best_validation_loss
     global best_model_path
@@ -164,16 +165,40 @@ def mock_train_model(config, train_dataloader, valid_dataloader):
 """
         
 
-data_name = "7p5M"
+def train_all():
+    config_ = config.get_config()
+    all_data_sizes = ['2p5M']
+    for data_name in all_data_sizes:
+        config_['data_size'] = data_name
 
-config_['data_size'] = data_name
+        train, valid, test = get_data_structures(data_name)
 
-train, valid, test = get_data_structures(data_name)
+        train_dataloader = BucketDataLoader_woEOS(train, config_)
+        valid_dataloader = BucketDataLoader_woEOS(valid, config_)
+        test_dataloader = BucketDataLoader_woEOS(test, config_)
 
-train_dataloader = BucketDataLoader_woEOS(train, config_)
-valid_dataloader = BucketDataLoader_woEOS(valid, config_)
+        model_checkpoint_name = f"{data_name}_woEOS_model_checkpoint.pth"
+        model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/{model_checkpoint_name}"
+        
+        transformer_woEOS.train_model(config_, train_dataloader, valid_dataloader, model_checkpoint_path)
+        
+        all_targets=[]
+        for _, _, target, _ in test_dataloader:
+            for t in target:
+                all_targets.append(t.tolist())
 
-transformer_woEOS.train_model(config_, train_dataloader, valid_dataloader)
+        result = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
+
+        data = {
+            'predictions': result,
+            'targets': all_targets
+        }
+
+        with open(f'results/{data_name}_woEOS_output.json', 'w') as f:
+            json.dump(data, f, indent=4)
+
+
+train_all()
 
 
 #hyperparam_tune(objective_function)

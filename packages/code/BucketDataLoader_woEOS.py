@@ -15,19 +15,19 @@ class BucketDataLoader_woEOS(DataLoader):
 
         sequences, mfe, structures, num_hairpins = zip(*batch)
         max_len = max(len(seq) for seq in sequences) + 1
-
+        
         padded_sequences = []
         for sequence in sequences:
             sequence = self.config['SOS'] + sequence
             sequence_tensor = torch.tensor([{'A': 1, 'C': 2, 'G': 3, 'T': 4, '@': 5}[nuc] for nuc in sequence], dtype=torch.long)
-            padded_sequence = F.pad(sequence_tensor, (0, max_len - len(sequence_tensor)), value=self.config['pad_value'])
+            padded_sequence = F.pad(sequence_tensor, (0, max_len - len(sequence)), value=self.config['pad_value'])
             padded_sequences.append(padded_sequence)
                         
         padded_structures = []
         for structure in structures:
             structure = self.config['SOS'] + structure
             structure_tensor = torch.tensor([{'(': 1, ')': 2, '.': 3, '@': 4}[symbol] for symbol in structure], dtype=torch.long)
-            padded_structure= F.pad(structure_tensor, (0, max_len - len(structure_tensor)), value=self.config['pad_value'])
+            padded_structure= F.pad(structure_tensor, (0, max_len - len(structure)), value=self.config['pad_value'])
             padded_structures.append(padded_structure)
 
         padded_sequences = torch.stack(padded_sequences)

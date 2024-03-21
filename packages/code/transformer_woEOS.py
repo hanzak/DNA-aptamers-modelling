@@ -150,14 +150,14 @@ class Transformer(nn.Module):
                     nn.init.constant_(layer.bias, 0)
 
         
-def train_model(config, train_dataloader, valid_dataloader):
+def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_path):
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
     print(f"using device {device}")
     
     ################
     #Setting up variables
     ################
-    #early_stop = 3
+    early_stop = 3
     best_valid_loss = 1e9
     counter = 0
     train_loss_mse_mfe = []
@@ -440,7 +440,7 @@ def train_model(config, train_dataloader, valid_dataloader):
             best_mse_valid_mfe = mse_valid_mfe
             best_mse_valid_num_hairpins = mse_valid_num_hairpins
             counter = 0
-            best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/{config['data_size']}_woEOS_model_checkpoint.pth"
+            best_model_path = model_checkpoint_path
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -449,13 +449,13 @@ def train_model(config, train_dataloader, valid_dataloader):
         elif normalized:
             counter += 1
         
-        """
+        
         if counter > early_stop:
             print(f"Stopped early at epoch {epoch+1}")
             plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
             plot_predvsactual(writer, actual_num_hairpins_valid, best_predicted_num_hairpins_valid, epoch, best_mse_valid_num_hairpins, "Valid", "num_hairpins")
             break
-        """
+        
 
         ################
         #Output LOSS for visualization in terminal
@@ -549,7 +549,7 @@ def evaluate_model(config, test_dataloader, model_path):
     ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 0.0])
     ce_weights = ce_weights.to(device)
     loss_function_mse = nn.MSELoss()
-    CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0, label_smoothing=0.1)   
+    CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0)   
     reverse_mapping = {1: '(', 2: ')', 3: '.', 4: '@'}
     
     predicted_mfes_test = np.zeros(len(test_dataloader.dataset))
@@ -660,6 +660,71 @@ def create_mask(src, tgt):
     """
         
     return src_mask, tgt_mask, src_padding_mask, tgt_padding_mask
+
+def create_target_mask(tgt, pad_token, device):
+    batch_size = tgt.size(0)
+    seq_len = tgt.size(1)
+    tgt_mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.bool), diagonal=1)
+    tgt_padding_mask = (tgt == pad_token)
+
+    return tgt_mask.to(device), tgt_padding_mask.to(device)
+
+def generate_sequences(model, src, actual_lengths, config):
+    device = config['device']
+    src = src.to(device)
+    actual_lengths = actual_lengths.to(device)
+    
+    batch_size, max_len = src.size()  
+    tgt = torch.full((batch_size, 1), 4, dtype=torch.long).to(device)  
+    active = torch.ones(batch_size, dtype=torch.bool).to(device)  
+    
+    src_mask, no, src_padding_mask, no = create_mask(src,tgt)
+    src_mask, src_padding_mask = src_mask.to(device), src_padding_mask.to(device)
+
+    for _ in range(max_len - 1): 
+        tgt_mask, tgt_padding_mask = create_target_mask(tgt, 0, device)
+        mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(src, tgt, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
+        next_tokens = structures_prob[:, -1, :].argmax(dim=-1) 
+
+        tgt = torch.cat([tgt, torch.where(active.unsqueeze(-1), next_tokens.unsqueeze(-1), torch.full_like(next_tokens.unsqueeze(-1), 0))], dim=1)
+
+        active &= (tgt.size(1) < actual_lengths)
+
+        if not active.any():
+            break
+
+    return tgt
+
+def evaluate_on_test(model_path, test_dataloader, config):
+    batch_iterator_test = tqdm(test_dataloader, desc=f"Testing")
+    running_ce=0
+    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 0.0])
+    ce_weights = ce_weights.to(config['device'])
+    CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0)  
+    interval=0
+    result = []
+    with torch.no_grad():
+        for batch in batch_iterator_test:            
+            sq, mfe, target, num_hairpins = batch
+            actual_lengths = get_actual_lengths(sq, 0)
+            model = Transformer(config)  
+            model.load_state_dict(torch.load(model_path)['model_state_dict'])
+            model.eval()  
+            predicted_struct = generate_sequences(model, sq, actual_lengths, config).tolist()
+            for p in predicted_struct:
+                result.append(p)
+            
+    return result
+            
+
+def get_actual_lengths(sequence_tensor, pad_token):
+    non_padding_mask = sequence_tensor != pad_token
+
+    actual_lengths = non_padding_mask.sum(dim=1)
+
+    return actual_lengths
+            
+            
 
 """
 def generate_secondary_structures_batch(model, batch, eos_token_id, pad_token_id):
