@@ -18,12 +18,89 @@ import os
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error, log_loss, confusion_matrix
 
+import random
+
 seed = 22  
 torch.manual_seed(seed)
 np.random.seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    
+class RelativeGlobalAttention(nn.Module):
+    def __init__(self, d_model, num_heads, max_len=1024, dropout=0.1):
+        super().__init__()
+        d_head, remainder = divmod(d_model, num_heads)
+        if remainder:
+            raise ValueError(
+                "incompatible `d_model` and `num_heads`"
+            )
+        self.max_len = max_len
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.key = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        self.query = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.Er = nn.Parameter(torch.randn(max_len, d_head))
+        self.register_buffer(
+            "mask", 
+            torch.tril(torch.ones(max_len, max_len))
+            .unsqueeze(0).unsqueeze(0)
+        )
+        # self.mask.shape = (1, 1, max_len, max_len)
+
+    
+    def forward(self, x):
+        # x.shape == (batch_size, seq_len, d_model)
+        batch_size, seq_len, _ = x.shape
+        
+        if seq_len > self.max_len:
+            raise ValueError(
+                "sequence length exceeds model capacity"
+            )
+        
+        k_t = self.key(x).reshape(batch_size, seq_len, self.num_heads, -1).permute(0, 2, 3, 1)
+        # k_t.shape = (batch_size, num_heads, d_head, seq_len)
+        v = self.value(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
+        q = self.query(x).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
+        # shape = (batch_size, num_heads, seq_len, d_head)
+        
+        start = self.max_len - seq_len
+        Er_t = self.Er[start:, :].transpose(0, 1)
+        # Er_t.shape = (d_head, seq_len)
+        QEr = torch.matmul(q, Er_t)
+        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
+        Srel = self.skew(QEr)
+        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
+        
+        QK_t = torch.matmul(q, k_t)
+        # QK_t.shape = (batch_size, num_heads, seq_len, seq_len)
+        attn = (QK_t + Srel) / math.sqrt(q.size(-1))
+        mask = self.mask[:, :, :seq_len, :seq_len]
+        # mask.shape = (1, 1, seq_len, seq_len)
+        attn = attn.masked_fill(mask == 0, float("-inf"))
+        # attn.shape = (batch_size, num_heads, seq_len, seq_len)
+        attn = F.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v)
+        # out.shape = (batch_size, num_heads, seq_len, d_head)
+        out = out.transpose(1, 2)
+        # out.shape == (batch_size, seq_len, num_heads, d_head)
+        out = out.reshape(batch_size, seq_len, -1)
+        # out.shape == (batch_size, seq_len, d_model)
+        return self.dropout(out)
+        
+    
+    def skew(self, QEr):
+        # QEr.shape = (batch_size, num_heads, seq_len, seq_len)
+        padded = F.pad(QEr, (1, 0))
+        # padded.shape = (batch_size, num_heads, seq_len, 1 + seq_len)
+        batch_size, num_heads, num_rows, num_cols = padded.shape
+        reshaped = padded.reshape(batch_size, num_heads, num_cols, num_rows)
+        # reshaped.size = (batch_size, num_heads, 1 + seq_len, seq_len)
+        Srel = reshaped[:, :, 1:, :]
+        # Srel.shape = (batch_size, num_heads, seq_len, seq_len)
+        return Srel
 
 class PositionalEncoding(nn.Module):
 
@@ -62,16 +139,15 @@ class NegativeReLU(nn.Module):
     def forward(self, x):
         return -F.relu(-x)
 
+
 class Transformer(nn.Module):
     
     def __init__(self,config):
         super(Transformer,self).__init__()
         self.d_model = config["d_model"]
         self.src_vocab_size = config["src_vocab_size"]
-        self.target_vocab_size = config["target_vocab_size"]
         self.heads = config["heads"]
         self.layers_encoder = config["layers_encoder"]
-        self.layers_decoder = config["layers_decoder"]
         self.d_ff = config["d_ff"]
         self.dropout = config["dropout"]
         self.max_len = config["max_len"]
@@ -133,10 +209,12 @@ def train_model(config, train_dataloader, valid_dataloader):
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
     print(f"using device {device}")
     
+    ID = random.randint(1,100000)
+    
     ################
     #Setting up variables
     ################
-    #early_stop = 3
+    early_stop = 4
     best_valid_loss = 1e9
     counter = 0
     train_loss_mse_mfe = []
@@ -153,9 +231,6 @@ def train_model(config, train_dataloader, valid_dataloader):
     start_epoch = 0
     n_epochs = config['num_epochs']
     normalize_epochs = 3
-    print_prediction=True
-    reverse_mapping = {1: '(', 2: ')', 3: '.'}
-    
     
     predicted_mfes_train = np.zeros(len(train_dataloader.dataset))
     actual_mfes_train = np.zeros(len(train_dataloader.dataset))
@@ -174,16 +249,15 @@ def train_model(config, train_dataloader, valid_dataloader):
     ################
     model = Transformer(config)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 0.0])
-    ce_weights = ce_weights.to(device)
     loss_function_mse = nn.MSELoss()
-    CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0)
+    
+    print(get_n_params(model))
     
     ################
     #Tensorboard output folder and init
     ################
     start_time = datetime.datetime.now().strftime("%d-%m-%Y_%H%M%S")
-    foldername = str({config['data_size']}) + "_woEOS_no-decoder_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size']) + "_dropout_" + str(config['dropout'])
+    foldername = str(ID) + "_" + str({config['data_size']}) + "_woEOS_no-decoder_complex_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size']) + "_dropout_" + str(config['dropout'])
     log_dir = os.path.join(config['exp_name']+config['data_size'], foldername)
     os.makedirs(log_dir, exist_ok=True)
     writer = tb.SummaryWriter(log_dir=log_dir)
@@ -192,14 +266,14 @@ def train_model(config, train_dataloader, valid_dataloader):
     #Check for existing checkpoint
     ################
     """
-    checkpoint_path = f"packages/model/model_checkpoint/2p5M/11-03-2024_011243_model_checkpoint.pth"
+    checkpoint_path = f"packages/model/model_checkpoint/2p5M/2p5M_weEOS_no-decoder_complex_model_checkpoint.pth"
     if os.path.exists(checkpoint_path):
         try:
             checkpoint = torch.load(checkpoint_path)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch'] + 1  
-            writer = tb.SummaryWriter(log_dir="packages/model/runs/tmodel/2p5M/run_11-03-2024_011243_lr_0.0002_batchsize_128_dropout_0.1")
+            writer = tb.SummaryWriter(log_dir=f"packages/model/runs/tmodel/2p5M/{foldername}")
         except FileNotFoundError:
             print("No checkpoint found.")   
     else:
@@ -234,7 +308,7 @@ def train_model(config, train_dataloader, valid_dataloader):
         running_ce=0
         for i,batch in enumerate(batch_iterator):
             sq, mfe, num_hairpins = batch
-            
+                        
             #when adding custom loss, need to convert this to float for some reasons.
             mfe=mfe.float()
             num_hairpins=num_hairpins.float()
@@ -373,7 +447,7 @@ def train_model(config, train_dataloader, valid_dataloader):
             best_mse_valid_mfe = mse_valid_mfe
             best_mse_valid_num_hairpins = mse_valid_num_hairpins
             counter = 0
-            best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/{config['data_size']}_weEOS_no_decoder_model_checkpoint.pth"
+            best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/{ID}-{config['data_size']}_weEOS_no-decoder_complex_model_checkpoint.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -382,13 +456,13 @@ def train_model(config, train_dataloader, valid_dataloader):
         elif normalized:
             counter += 1
         
-        """
+        
         if counter > early_stop:
             print(f"Stopped early at epoch {epoch+1}")
             plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
             plot_predvsactual(writer, actual_num_hairpins_valid, best_predicted_num_hairpins_valid, epoch, best_mse_valid_num_hairpins, "Valid", "num_hairpins")
             break
-        """
+        
 
         ################
         #Output LOSS for visualization in terminal
@@ -433,7 +507,7 @@ def train_model(config, train_dataloader, valid_dataloader):
     writer.add_figure('Total loss for Training and Validation Over Epochs', plt.gcf())
     
     writer.add_text('Configuration', f"Last epoch: {last_epoch+1}, Best epoch: {best_epoch+1}, Learning Rate: {config['learning_rate']}, Scheduler: None, Batch Size: {config['batch_size']}, \
-                    dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['layers_encoder']}, Decoder Layers: {config['layers_decoder']}, heads: {config['heads']}, \
+                    dropout: {config['dropout']}, d_model: {config['d_model']}, d_ff: {config['d_ff']}, Encoder Layers: {config['layers_encoder']}, heads: {config['heads']}, \
                     max_len: {config['max_len']}")
      
     ################
@@ -468,11 +542,7 @@ def evaluate_model(config, test_dataloader, model_path):
     model.eval()  
     device = config['device']
     
-    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 0.0])
-    ce_weights = ce_weights.to(device)
     loss_function_mse = nn.MSELoss()
-    CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0, label_smoothing=0.1)   
-    reverse_mapping = {1: '(', 2: ')', 3: '.', 4: '@'}
     
     predicted_mfes_test = np.zeros(len(test_dataloader.dataset))
     actual_mfes_test = np.zeros(len(test_dataloader.dataset))
@@ -480,7 +550,6 @@ def evaluate_model(config, test_dataloader, model_path):
     actual_num_hairpins_test = np.zeros(len(test_dataloader.dataset))
 
     it=0
-    running_ce=0
     print_prediction=True
     with torch.no_grad():
         for batch in test_dataloader:            
@@ -534,3 +603,8 @@ def create_mask(src):
     src_padding_mask = (src == 0).type(torch.bool)
         
     return src_mask, src_padding_mask
+
+def get_n_params(model):
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([np.prod(p.size()) for p in model_parameters])
+    return params

@@ -1,5 +1,5 @@
 import transformer_woEOS_no_decoder
-import config
+import config_no_decoder
 import dataset 
 import pickle
 import os
@@ -11,7 +11,7 @@ import random
 from NpEncoder import *
 from torch.utils.data import Dataset, ConcatDataset
 
-config_ = config.get_config()
+config_ = config_no_decoder.get_config()
 
 best_validation_loss = float(1e9)
 best_model_path = None
@@ -89,36 +89,43 @@ train, valid, test = get_data_structures(data_name)
 
 train_dataloader = BucketDataLoader_woEOS_no_decoder(train, config_)
 valid_dataloader = BucketDataLoader_woEOS_no_decoder(valid, config_)
-#test_dataloader = BucketDataLoader_woEOS_no_decoder(test, config_)
+test_dataloader = BucketDataLoader_woEOS_no_decoder(test, config_)
 
 
-#transformer_woEOS_no_decoder.train_model(config_, train_dataloader, valid_dataloader)
+transformer_woEOS_no_decoder.train_model(config_, train_dataloader, valid_dataloader)
 
-
+"""
 with open(f'data/data_generalization.pkl', 'rb') as file:
     data_gen = pickle.load(file)
-    
+
 new_data = []
-testing=True
-l=50
-r=61
-while testing:
-    if r == 101:
-        testing=False
-    for d in data_gen:
-        sq,_,_ = d
-        if len(sq)>l  and len(sq)<r:
-            new_data.append(d)
-    new_data = dataset.count_hairpins(new_data)
+
+for d in data_gen:
+    sq,_,_ = d
+    if len(sq)>50  and len(sq)<61:
+        new_data.append(d)
+new_data = dataset.count_hairpins(new_data)
         
-    test_dataloader = BucketDataLoader_woEOS_no_decoder(new_data, config_)
-    pred, act = transformer_woEOS_no_decoder.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/7p5M/7p5M_weEOS_no_decoder_model_checkpoint.pth")
-    
-    new_data=[]
-    
-    l+=10
-    r+=10
-        
+test_dataloader = BucketDataLoader_woEOS_no_decoder(new_data, config_)
+"""
+"""
+with open(f'data/data_generalization.pkl', 'rb') as file:
+    data_gen = pickle.load(file)
+new_data = []
+for d in data_gen:
+    sq,_,_ = d
+    if len(sq)==100:
+        new_data.append(d)
+    if len(new_data)==100:
+        break
+new_data = dataset.count_hairpins(new_data)
+test_dataloader = BucketDataLoader_woEOS_no_decoder(new_data, config_)
+"""
+#pred, act = transformer_woEOS_no_decoder.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/2p5M/67829-2p5M_weEOS_no-decoder_complex_500len_model_checkpoint.pth")
+#pred, act = transformer_woEOS_no_decoder.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/5M/72865-5M_weEOS_no-decoder_complex_model_checkpoint.pth")
+#pred, act = transformer_woEOS_no_decoder.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/2p5M/75131-2p5M_weEOS_no-decoder_complex_model_checkpoint.pth")
+
+
     
         
 
