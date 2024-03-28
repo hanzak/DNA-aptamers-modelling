@@ -9,7 +9,7 @@ def get_config():
         "heads": 8,
         "dropout": 0.1,
         "d_ff": 512,
-        "src_vocab_size": 5,
+        "src_vocab_size": 4,
         "max_len":500,
         "preload": None,
         "exp_name": "packages/model/runs/",

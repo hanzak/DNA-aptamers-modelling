@@ -98,8 +98,10 @@ class Transformer(nn.Module):
         
         self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, self.layers_encoder)
                 
-        self.mfe_out = nn.Sequential(nn.Linear(self.d_model, 1), NegativeReLU())
-        self.num_hairpins_out = nn.Sequential(nn.Linear(self.d_model, 1), nn.ReLU())
+        #self.mfe_out = nn.Sequential(nn.Linear(self.d_model, 1), NegativeReLU())
+        #self.num_hairpins_out = nn.Sequential(nn.Linear(self.d_model, 1), nn.ReLU())
+        self.mfe_out = nn.Linear(self.d_model, 1)
+        self.num_hairpins_out = nn.Linear(self.d_model, 1)
         
         self.init_weights()
         
@@ -114,7 +116,10 @@ class Transformer(nn.Module):
         src = self.positional_encoder(src)
         
         encoder_output = self.transformer_encoder(src,mask=src_mask, src_key_padding_mask=src_padding_mask)
-        mean_encoder_out = torch.mean(encoder_output, dim=1)
+        
+        #print(encoder_output*~src_padding_mask.unsqueeze(-1))
+        mean_encoder_out = torch.mean(encoder_output*~src_padding_mask.unsqueeze(-1), dim=1)
+
         mfe = self.mfe_out(mean_encoder_out)
         num_hairpins_pred = self.num_hairpins_out(mean_encoder_out)  
 
@@ -191,14 +196,14 @@ def train_model(config, train_dataloader, valid_dataloader):
     #Check for existing checkpoint
     ################
     """
-    checkpoint_path = f"packages/model/model_checkpoint/2p5M/2p5M_weEOS_no-decoder_complex_model_checkpoint.pth"
+    checkpoint_path = f"packages/model/model_checkpoint/7p5M/31085-7p5M_weEOS_no-decoder_complex_model_checkpoint.pth"
     if os.path.exists(checkpoint_path):
         try:
             checkpoint = torch.load(checkpoint_path)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch'] + 1  
-            writer = tb.SummaryWriter(log_dir=f"packages/model/runs/tmodel/2p5M/{foldername}")
+            #writer = tb.SummaryWriter(log_dir=f"packages/model/runs/tmodel/2p5M/{foldername}")
         except FileNotFoundError:
             print("No checkpoint found.")   
     else:
@@ -237,13 +242,13 @@ def train_model(config, train_dataloader, valid_dataloader):
             mfe=mfe.float()
             num_hairpins=num_hairpins.float()
             
+            optimizer.zero_grad()
+            
             sq, mfe, num_hairpins = sq.to(device), mfe.to(device), num_hairpins.to(device)
             
             src_mask, src_padding_mask = create_mask(sq)
             src_mask, src_padding_mask = src_mask.to(device), src_padding_mask.to(device)
             mfes, predicted_num_hairpins = model(sq, src_mask, src_padding_mask)
-        
-            optimizer.zero_grad()
                                     
             loss_mfe = loss_function_mse(mfes, mfe)
             loss_num_hairpins = loss_function_mse(predicted_num_hairpins, num_hairpins)                        
@@ -264,6 +269,9 @@ def train_model(config, train_dataloader, valid_dataloader):
                 normalized_mse_num_hairpins = loss_num_hairpins / baseline_mse_num_hairpins
                             
                 total_loss = normalized_mse_mfe + normalized_mse_num_hairpins
+            
+                
+            total_loss = loss_mfe + loss_num_hairpins 
                                             
             total_loss.backward()
             optimizer.step()
@@ -358,11 +366,11 @@ def train_model(config, train_dataloader, valid_dataloader):
             plot_predvsactual(writer, actual_mfes_valid, predicted_mfes_valid, epoch, mse_valid_mfe, "Valid", "mfe")
             plot_predvsactual(writer, actual_num_hairpins_train, predicted_num_hairpins_train, epoch, mse_train_num_hairpins, "Train", "num_hairpins")        
             plot_predvsactual(writer, actual_num_hairpins_valid, predicted_num_hairpins_valid, epoch, mse_valid_num_hairpins, "Valid", "num_hairpins")
-                 
+        
         ################
         #EARLY STOP AND CHECKPOINT
         ################ 
-        if total_valid_loss < best_valid_loss and normalized:
+        if total_valid_loss < best_valid_loss:
             best_predicted_mfes_valid = predicted_mfes_valid
             best_predicted_num_hairpins_valid = predicted_num_hairpins_valid
             best_epoch = epoch
@@ -370,20 +378,20 @@ def train_model(config, train_dataloader, valid_dataloader):
             best_mse_valid_mfe = mse_valid_mfe
             best_mse_valid_num_hairpins = mse_valid_num_hairpins
             counter = 0
-            best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/{ID}-{config['data_size']}_weEOS_no-decoder_complex_model_checkpoint.pth"
+            best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/{config['data_size']}_weEOS_no-decoder_complex_model_checkpoint_continue.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }, best_model_path)
-        elif normalized:
+        else:
             counter += 1
         
         
         if counter > early_stop:
             print(f"Stopped early at epoch {epoch+1}")
-            plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
-            plot_predvsactual(writer, actual_num_hairpins_valid, best_predicted_num_hairpins_valid, epoch, best_mse_valid_num_hairpins, "Valid", "num_hairpins")
+            #plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
+            #plot_predvsactual(writer, actual_num_hairpins_valid, best_predicted_num_hairpins_valid, epoch, best_mse_valid_num_hairpins, "Valid", "num_hairpins")
             break
         
 
@@ -396,6 +404,7 @@ def train_model(config, train_dataloader, valid_dataloader):
     ################
     #TRACKING.
     ################ 
+    
     plt.figure(figsize=(10, 5))
     plt.plot(train_loss_mse_mfe, label='Training Loss', color='blue')
     plt.plot(valid_loss_mse_mfe, label='Validation Loss', color='orange')
@@ -437,6 +446,7 @@ def train_model(config, train_dataloader, valid_dataloader):
     #Closing writer
     ################
     writer.close() 
+    
     
     ################
     #Hyperparam tune based on minimizing sum of all losses.

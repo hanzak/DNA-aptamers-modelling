@@ -229,9 +229,9 @@ with open(f'data/splits/test_2p5M_struct.pkl', 'rb') as file:
 new_data = []
 for d in data_gen:
     sq,_,_,_ = d
-    if len(sq)==10:
+    if len(sq)<15:
         new_data.append(d)
-    if len(new_data)==3:
+    if len(new_data)==10:
         break
 #new_data = dataset.count_hairpins(new_data)
 test_dataloader = BucketDataLoader_woEOS(new_data, config_)

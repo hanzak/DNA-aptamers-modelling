@@ -5,6 +5,7 @@ import pickle
 import os
 import torch
 from BucketDataLoader_woEOS_no_decoder import BucketDataLoader_woEOS_no_decoder
+from BucketDataLoader_woEOS_no_decoder_2ndstruct import BucketDataLoader_woEOS_no_decoder_2ndstruct
 import numpy as np
 import json
 import random
@@ -81,15 +82,15 @@ def get_data_structures(data_name):
             pickle.dump(test, f) 
     return train, valid, test
 
-data_name = "7p5M"
+data_name = "250k"
 
 config_['data_size'] = data_name
 
 train, valid, test = get_data_structures(data_name)
 
-train_dataloader = BucketDataLoader_woEOS_no_decoder(train, config_)
-valid_dataloader = BucketDataLoader_woEOS_no_decoder(valid, config_)
-test_dataloader = BucketDataLoader_woEOS_no_decoder(test, config_)
+train_dataloader = BucketDataLoader_woEOS_no_decoder_2ndstruct(train, config_)
+valid_dataloader = BucketDataLoader_woEOS_no_decoder_2ndstruct(valid, config_)
+test_dataloader = BucketDataLoader_woEOS_no_decoder_2ndstruct(test, config_)
 
 
 transformer_woEOS_no_decoder.train_model(config_, train_dataloader, valid_dataloader)
