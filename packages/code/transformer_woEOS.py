@@ -76,6 +76,8 @@ class Transformer(nn.Module):
         self.dropout = config["dropout"]
         self.max_len = config["max_len"]
         self.device = config["device"]
+        self.sampling_p = 0.99
+        self.decay_rate = 0.98
         
         self.model_type = "Transformer"
         
@@ -85,7 +87,8 @@ class Transformer(nn.Module):
             dropout = self.dropout
         )
                         
-        self.embedding = nn.Embedding(self.src_vocab_size, self.d_model)
+        self.embedding_encoder = nn.Embedding(self.src_vocab_size, self.d_model)
+        self.embedding_decoder = nn.Embedding(self.target_vocab_size, self.d_model)
         
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model = self.d_model,
@@ -106,7 +109,7 @@ class Transformer(nn.Module):
         )
         
         self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, self.layers_decoder)
-        
+                
         self.mfe_out = nn.Sequential(nn.Linear(self.d_model, 1), NegativeReLU())
         self.decoder_out = nn.Linear(self.d_model, self.target_vocab_size)
         self.num_hairpins_out = nn.Sequential(nn.Linear(self.d_model, 1), nn.ReLU())
@@ -114,41 +117,68 @@ class Transformer(nn.Module):
         self.init_weights()
         
         self.to(self.device)
+        
+    def update_sampling_p(self):
+        self.sampling_p *= self.decay_rate
+        
+    def mix_embeddings(self, first_decoder_output, tgt_emb, tgt_padding_mask, alpha=1.0):
+        softmax_scores = F.softmax(first_decoder_output * alpha, dim=-1)
+        softmax_scores = softmax_scores * ~tgt_padding_mask.unsqueeze(-1)
+        
+        # Multiply each score by its corresponding embedding and sum them to get the mixed embedding
+        weighted_sum_embeddings = torch.matmul(softmax_scores, self.embedding_decoder.weight)
+        weighted_sum_embeddings = weighted_sum_embeddings.reshape(tgt_emb.shape)
+        
+        mixed_input = (1-self.sampling_p) * weighted_sum_embeddings + (self.sampling_p) * tgt_emb
+
+        return mixed_input
                                      
-    def forward(self, src, target, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, memory_key_padding_mask):        
+    def forward(self, src, target, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, memory_key_padding_mask, training=False):        
         batchsize = src.size(0)
         
         device = src.device
                 
-        src = self.embedding(src) * math.sqrt(self.d_model)
+        src = self.embedding_encoder(src) * math.sqrt(self.d_model)
         src = self.positional_encoder(src)
         
         encoder_output = self.transformer_encoder(src,mask=src_mask, src_key_padding_mask=src_padding_mask)
 
-        target = self.embedding(target) * math.sqrt(self.d_model)
+        target = self.embedding_decoder(target) * math.sqrt(self.d_model)
         target = self.positional_encoder(target)
                 
-        decoder_output = self.transformer_decoder(target, encoder_output, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)
-
-        decoded = self.decoder_out(decoder_output)
-        decoded_probs = F.softmax(decoded, dim=-1)  
+        real_output = self.transformer_decoder(target, encoder_output, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)
         
-        mean_decoder_out = torch.mean(decoder_output, dim=1)
-        #mean_encoder_out = torch.mean(encoder_output, dim=1)
+        if training:
+            decoded = self.decoder_out(real_output)
+            mixed_input = self.mix_embeddings(decoded, target, tgt_padding_mask)
+            real_output = self.transformer_decoder(mixed_input, encoder_output, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)
+              
+        decoded = self.decoder_out(real_output)
+        decoded_probs = F.softmax(decoded, dim=-1)  
+        mean_decoder_out = torch.mean(real_output, dim=1)
         mfe = self.mfe_out(mean_decoder_out)
         num_hairpins_pred = self.num_hairpins_out(mean_decoder_out)  
 
         return mfe, decoded, decoded_probs, num_hairpins_pred 
+
     
     def init_weights(self):
-        nn.init.xavier_uniform_(self.embedding.weight)
+        nn.init.xavier_uniform_(self.embedding_decoder.weight)
+        nn.init.xavier_uniform_(self.embedding_encoder.weight)
+        
+        pad_index = 0  # Assuming 0 is the index for the PAD token
+        sos_index = 1  # Assuming 1 is the index for the SOS token
+        with torch.no_grad():
+            self.embedding_decoder.weight[pad_index].zero_()
+            self.embedding_decoder.weight[sos_index].zero_()
+            self.embedding_encoder.weight[pad_index].zero_()
+            self.embedding_encoder.weight[sos_index].zero_()
         
         for layer in self.modules():
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
                 if layer.bias is not None:
                     nn.init.constant_(layer.bias, 0)
-
         
 def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_path):
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
@@ -195,7 +225,7 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
     ################
     model = Transformer(config)
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 0.0])
+    ce_weights = torch.tensor([2.0, 2.0, 1.0, 0.0, 0.0])
     ce_weights = ce_weights.to(device)
     loss_function_mse = nn.MSELoss()
     CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0)
@@ -256,6 +286,8 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
         for i,batch in enumerate(batch_iterator):
             sq, mfe, target, num_hairpins = batch
             
+            optimizer.zero_grad()
+            
             #when adding custom loss, need to convert this to float for some reasons.
             mfe=mfe.float()
             num_hairpins=num_hairpins.float()
@@ -268,9 +300,7 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
             
             src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = src_mask.to(device), tgt_mask.to(device), src_padding_mask.to(device), tgt_padding_mask.to(device)
             
-            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq,target_input,src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
-        
-            optimizer.zero_grad()
+            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq,target_input,src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask, training=True)
             
             predicted_indices = torch.argmax(structures_prob, dim=-1)
             
@@ -319,7 +349,9 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
                 actual_num_hairpins_train[it*len(act_num_hairpins):(it+1)*len(act_num_hairpins)] = act_num_hairpins.flatten()
             
             it+=1
-
+        
+        model.update_sampling_p()
+        
         mse_train_mfe = mean_squared_error(actual_mfes_train, predicted_mfes_train)
         mse_train_num_hairpins = mean_squared_error(actual_num_hairpins_train, predicted_num_hairpins_train)
         
@@ -353,26 +385,7 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
                     
                 predicted_indices = torch.argmax(structures_prob, dim=-1)
             
-                target_out = target[:, 1:]
-                
-                if print_prediction:
-                    predicted = predicted_indices[0:10].tolist()
-                    target_structure = target_out[0:10].tolist()
-                    decoded_predicted_structures = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in predicted]
-                    target_structure_10 = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in target_structure]
-                    
-                    print("Predicted structures: ")
-                    for j,decoded_structure in enumerate(decoded_predicted_structures):
-                        print(decoded_structure)
-                        print(mfes[j])
-                        
-                    print("Target structures: ")
-                    for j,target_ in enumerate(target_structure_10):
-                        print(target_)
-                        print(mfe[j])
-                        
-                    print_prediction=False
-                
+                target_out = target[:, 1:]      
                         
                 ce_loss = CELoss(predicted_structures.contiguous().view(-1, 5), target_out.contiguous().view(-1))
                 running_ce += ce_loss.item()
@@ -440,7 +453,7 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
             best_mse_valid_mfe = mse_valid_mfe
             best_mse_valid_num_hairpins = mse_valid_num_hairpins
             counter = 0
-            best_model_path = model_checkpoint_path
+            best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/TEST-{config['data_size']}_weEOS_model_checkpoint.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -538,95 +551,7 @@ def plot_predvsactual(writer, actual, pred, epoch, mse, data_origin: str, measur
         plt.text(x=0.05, y=0.85, s=f'MSE: {mse:.4f}', transform=plt.gca().transAxes, fontsize=12, ha='left', va='top')
 
         writer.add_figure(f'{data_origin} data: Predicted vs Actual {measurement}', plt.gcf(), epoch)
-        
-        
-def evaluate_model(config, test_dataloader, model_path): 
-    model = Transformer(config)  
-    model.load_state_dict(torch.load(model_path)['model_state_dict'])
-    model.eval()  
-    device = config['device']
-    
-    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 0.0])
-    ce_weights = ce_weights.to(device)
-    loss_function_mse = nn.MSELoss()
-    CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0)   
-    reverse_mapping = {1: '(', 2: ')', 3: '.', 4: '@'}
-    
-    predicted_mfes_test = np.zeros(len(test_dataloader.dataset))
-    actual_mfes_test = np.zeros(len(test_dataloader.dataset))
-    predicted_num_hairpins_test = np.zeros(len(test_dataloader.dataset))
-    actual_num_hairpins_test = np.zeros(len(test_dataloader.dataset))
 
-    it=0
-    running_ce=0
-    print_prediction=True
-    with torch.no_grad():
-        for batch in test_dataloader:            
-            sq, mfe, target, num_hairpins = batch                            
-            sq, mfe, target, num_hairpins = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device)
-            
-            target_input = target[:, :-1]
-            
-            src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = create_mask(sq, target_input)
-            
-            src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = src_mask.to(device), tgt_mask.to(device), src_padding_mask.to(device), tgt_padding_mask.to(device)
-            
-            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq,target_input,src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
-            
-            predicted_indices = torch.argmax(structures_prob, dim=-1)
-            
-            if print_prediction:
-                predicted = predicted_indices[0:10].tolist()
-                target_structure = target[0:10].tolist()
-                decoded_predicted_structures = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in predicted]
-                target_structure_10 = [''.join(reverse_mapping[symbol] for symbol in structure if symbol in reverse_mapping) for structure in target_structure]
-                    
-                print("Predicted structures: ")
-                for j,decoded_structure in enumerate(decoded_predicted_structures):
-                    print(decoded_structure)
-                    print(mfes[j])
-                        
-                print("Target structures: ")
-                for j,target_ in enumerate(target_structure_10):
-                    print(target_)
-                    print(mfe[j])
-                        
-                print_prediction=False
-                
-            target_out = target[:, 1:]
-                      
-            ce_loss = CELoss(predicted_structures.contiguous().view(-1, 5), target_out.contiguous().view(-1))
-            running_ce += ce_loss.item()
-
-            pred_mfe = mfes.detach().cpu().numpy()
-            act_mfe = mfe.detach().cpu().numpy()
-
-            pred_num_hairpins = predicted_num_hairpins.detach().cpu().numpy()
-            act_num_hairpins = num_hairpins.detach().cpu().numpy()
-
-            predicted_mfes_test[it*len(pred_mfe):(it+1)*len(pred_mfe)] = pred_mfe.flatten()
-            predicted_num_hairpins_test[it*len(pred_num_hairpins):(it+1)*len(pred_num_hairpins)] = pred_num_hairpins.flatten()
-
-            actual_mfes_test[it*len(act_mfe):(it+1)*len(act_mfe)] = act_mfe.flatten()
-            actual_num_hairpins_test[it*len(act_num_hairpins):(it+1)*len(act_num_hairpins)] = act_num_hairpins.flatten()
-
-            it+=1
-        
-    mse_test_mfe = mean_squared_error(actual_mfes_test, predicted_mfes_test)
-    ce_test = running_ce/len(test_dataloader)
-    mse_test_num_hairpins = mean_squared_error(actual_num_hairpins_test, predicted_num_hairpins_test)
-    
-    total_test_loss = mse_test_mfe + ce_test + mse_test_num_hairpins
-    
-    print(f'MSE-mfe: {mse_test_mfe}, CE: {ce_test}, MSE-num_hairpins: {mse_test_num_hairpins}')
-    
-    #plot_predvsactual(writer, actual_mfes_test, predicted_values_test, 0, mse_test_mfe, "Test", "mfe")
-    #plot_predvsactual(writer, actual_num_hairpins_test, predicted_num_hairpins_test, 0, mse_test_num_hairpins, "Test", "num_hairpins")
-    
-    return predicted_mfes_test, actual_mfes_test
-
-
-    
     
 def generate_square_subsequent_mask(sz):
     mask = (torch.triu(torch.ones((sz, sz)) == 1)).transpose(0, 1)
@@ -671,7 +596,6 @@ def create_target_mask(tgt, pad_token, device):
 
 def generate_sequences(model, src, actual_lengths, config):
     device = config['device']
-    src = src.to(device)
     actual_lengths = actual_lengths.to(device)
     
     batch_size, max_len = src.size()  
@@ -683,38 +607,185 @@ def generate_sequences(model, src, actual_lengths, config):
 
     for _ in range(max_len - 1): 
         tgt_mask, tgt_padding_mask = create_target_mask(tgt, 0, device)
-        mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(src, tgt, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
+        mfes, logits, structures_prob, predicted_num_hairpins = model(src, tgt, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
         next_tokens = structures_prob[:, -1, :].argmax(dim=-1) 
 
         tgt = torch.cat([tgt, torch.where(active.unsqueeze(-1), next_tokens.unsqueeze(-1), torch.full_like(next_tokens.unsqueeze(-1), 0))], dim=1)
 
         active &= (tgt.size(1) < actual_lengths)
 
-        if not active.any():
-            break
+        #if not active.any():
+            #break
 
-    return tgt
+    return tgt, mfes, predicted_num_hairpins
+
+def generate_sequences_sim(model, src, target_out, actual_lengths, config):
+    random_error = 0.0
+    device = config['device']
+    actual_lengths = actual_lengths.to(device)
+    
+    batch_size, max_len = src.size() 
+    tgt = torch.full((batch_size, 1), 1, dtype=torch.long).to(device)  
+    active = torch.ones(batch_size, dtype=torch.bool).to(device) 
+    
+    src_mask, no, src_padding_mask, no = create_mask(src, tgt)
+    src_mask, src_padding_mask = src_mask.to(device), src_padding_mask.to(device)
+        
+    for step in range(max_len - 1): 
+        tgt_mask, tgt_padding_mask = create_target_mask(tgt, 0, device)
+        mfes, logits, structures_prob, predicted_num_hairpins = model(src, tgt, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
+        
+        next_token = target_out[:, (step+1)]
+        if torch.rand(1) < random_error:
+            for i, t in enumerate(next_token):
+                actual_token = t.item()
+                if actual_token == 0 or actual_token == 1:
+                    break
+                random_token = actual_token
+                while random_token==actual_token:
+                    random_token = np.random.randint(2,5)
+                target_out[i, (step+1)] = random_token
+                
+        tgt = target_out[:, :(step+2)]
+                        
+    return tgt, mfes, predicted_num_hairpins
+
+
+def generate_sequences_bfs(model, src, real_mfe, real_h, actual_lengths, config, beam_width=2, alpha=0.5):
+    device = config['device']
+    src = src.to(device)
+    actual_lengths = actual_lengths.to(device)
+        
+    batch_size, max_len = src.size()
+    initial_tgt = torch.full((batch_size, 1), 1, dtype=torch.long).to(device)  # Start token for each sequence in the batch
+    current_paths = [(initial_tgt, torch.zeros(batch_size, device=device))]  # List of tuples (path, score)
+
+    # Create masks for source
+    src_mask, _, src_padding_mask, _ = create_mask(src, initial_tgt)
+    src_mask, src_padding_mask = src_mask.to(device), src_padding_mask.to(device)
+    
+    zero_token = torch.tensor([0], dtype=torch.long, device=device)
+
+    # BFS with beam search for all sequences in parallel
+    for step in range(max_len):
+        all_paths = []
+        num_paths = beam_width ** step  # Number of paths for each sequence at this step
+        for path, scores in current_paths:
+            current_tgt_batch = path.repeat(num_paths, 1)
+            tgt_mask, tgt_padding_mask = create_target_mask(current_tgt_batch, 0, device)
+
+            # Expand src and masks to match the batch size of current_tgt_batch
+            if step>0:
+                expanded_src = src.repeat(2*num_paths, 1)
+                expanded_src_padding_mask = src_padding_mask.repeat(2*num_paths, 1)
+                mfe = real_mfe.repeat(2*num_paths, 1)
+                h = real_h.repeat(2*num_paths, 1)
+            else:
+                expanded_src = src.repeat(num_paths, 1)
+                expanded_src_padding_mask = src_padding_mask.repeat(num_paths, 1)
+                mfe = real_mfe.repeat(num_paths, 1)
+                h = real_h.repeat(num_paths, 1)
+            print(expanded_src.shape)
+            print(current_tgt_batch.shape)
+            print(path.shape)
+            
+            mfes, logits, _, predicted_num_hairpins = model(
+                expanded_src,
+                current_tgt_batch,
+                src_mask,
+                tgt_mask,
+                expanded_src_padding_mask,
+                tgt_padding_mask,
+                expanded_src_padding_mask
+            )
+
+            # Calculate losses and scores for each path
+            mse_mfe = (mfes - mfe)**2
+            mse_num_hairpins = (predicted_num_hairpins - h)**2
+            combined_loss = alpha * mse_mfe + (1 - alpha) * mse_num_hairpins
+            combined_loss = combined_loss.squeeze()
+
+            # Update scores
+            updated_scores = scores.repeat(num_paths) - combined_loss
+
+            # Filter logits and generate new paths
+            filtered_logits = logits.clone()
+            for token_idx in range(logits.size(-1)):
+                if token_idx not in [2, 3, 4]:
+                    filtered_logits[:, :, token_idx] = float('-inf')
+            probs = torch.softmax(filtered_logits[:, -1, :].repeat(beam_width,1), dim=-1)
+            top_probs, top_indices = probs.topk(beam_width, dim=-1)
+            
+            
+            
+            # Create new paths
+            for j in range(beam_width):
+                tmp = path.repeat(beam_width, 1)
+                next_token = top_indices[:, j].unsqueeze(-1)
+                print(next_token)
+                new_path = torch.cat([tmp, next_token], dim=-1)
+                all_paths.append((new_path, updated_scores))
+
+        # Prune paths to keep only the top beam_width paths
+        all_paths_sorted = sorted(all_paths, key=lambda x: x[1].sum(), reverse=True)[:beam_width]
+        current_paths = [(path, scores) for path, scores in zip(*[torch.stack(tensors) for tensors in zip(*all_paths_sorted)])]
+        
+
+    # Return the best path for each sequence in the batch
+    best_paths, _ = max(current_paths, key=lambda x: x[1].sum())
+    return best_paths
+
+
+
 
 def evaluate_on_test(model_path, test_dataloader, config):
     batch_iterator_test = tqdm(test_dataloader, desc=f"Testing")
-    running_ce=0
-    ce_weights = torch.tensor([0.0, 2.0, 2.0, 1.0, 0.0])
-    ce_weights = ce_weights.to(config['device'])
-    CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0)  
-    interval=0
+    
+    predicted_mfes_test = np.zeros(len(test_dataloader.dataset))
+    actual_mfes_test = np.zeros(len(test_dataloader.dataset))
+    predicted_num_hairpins_test = np.zeros(len(test_dataloader.dataset))
+    actual_num_hairpins_test = np.zeros(len(test_dataloader.dataset))
+    
+    model = Transformer(config)  
+    model.load_state_dict(torch.load(model_path)['model_state_dict'])
+    model.eval()  
+    
+    it=0
     result = []
     with torch.no_grad():
         for batch in batch_iterator_test:            
+            device = config['device']
             sq, mfe, target, num_hairpins = batch
+            sq = sq.to(device)
+            target = target.to(device)
+            mfe = mfe.to(device)
+            num_hairpins = num_hairpins.to(device)
             actual_lengths = get_actual_lengths(sq, 0)
-            model = Transformer(config)  
-            model.load_state_dict(torch.load(model_path)['model_state_dict'])
-            model.eval()  
-            predicted_struct = generate_sequences(model, sq, actual_lengths, config).tolist()
+
+            predicted_struct, mfes, predicted_num_hairpins = generate_sequences_bfs(model, sq, mfe, num_hairpins, actual_lengths, config)
+            #predicted_struct, mfes, predicted_num_hairpins = generate_sequences_sim(model, sq, target, actual_lengths, config)
+            predicted_struct = predicted_struct.tolist()
             for p in predicted_struct:
                 result.append(p)
             
-    return result
+            pred_mfe = mfes.detach().cpu().numpy()
+            act_mfe = mfe.detach().cpu().numpy()
+
+            pred_num_hairpins = predicted_num_hairpins.detach().cpu().numpy()
+            act_num_hairpins = num_hairpins.detach().cpu().numpy()
+
+            predicted_mfes_test[it*len(pred_mfe):(it+1)*len(pred_mfe)] = pred_mfe.flatten()
+            predicted_num_hairpins_test[it*len(pred_num_hairpins):(it+1)*len(pred_num_hairpins)] = pred_num_hairpins.flatten()
+
+            actual_mfes_test[it*len(act_mfe):(it+1)*len(act_mfe)] = act_mfe.flatten()
+            actual_num_hairpins_test[it*len(act_num_hairpins):(it+1)*len(act_num_hairpins)] = act_num_hairpins.flatten()
+
+            it+=1
+            
+    mse_test_mfe = mean_squared_error(actual_mfes_test, predicted_mfes_test)
+    mse_test_num_hairpins = mean_squared_error(actual_num_hairpins_test, predicted_num_hairpins_test)
+    
+    return result, mse_test_mfe, mse_test_num_hairpins
             
 
 def get_actual_lengths(sequence_tensor, pad_token):
@@ -724,27 +795,4 @@ def get_actual_lengths(sequence_tensor, pad_token):
 
     return actual_lengths
             
-            
-
-"""
-def generate_secondary_structures_batch(model, batch, eos_token_id, pad_token_id):
-        model.eval()
-        with torch.no_grad():
-            sq, mfe, target, num_hairpins, mask = batch     
-            sq, mfe, target, num_hairpins, mask = sq.to(device), mfe.to(device), target.to(device), num_hairpins.to(device), mask.to(device)
-            mfes, predicted_structures, structures_prob, predicted_num_hairpins = model(sq, mask)
-            
-            predictions = torch.argmax(structures_prob, dim=-1)
-            predicted_structures = []
-
-            for i in range(predictions.shape[0]):
-                predicted_structure = []
-                for token_id in predictions[i]:
-                    if token_id.item() == eos_token_id:
-                        break
-                    elif token_id.item() != pad_token_id:
-                        predicted_structure.append(token_id.item())
-                predicted_structures.append(predicted_structure)
-
-        return predicted_structures
-"""
+        

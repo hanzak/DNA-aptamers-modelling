@@ -11,22 +11,22 @@ class BucketDataLoader_woEOS(DataLoader):
         self.config=config
 
     def collate_fn(self, batch):
-        #batch.sort(key=lambda x: len(x[0]), reverse=True)
+        #batch.sort(key=lambda x: len(x[0]), reverse=False)
 
         sequences, mfe, structures, num_hairpins = zip(*batch)
-        max_len = max(len(seq) for seq in sequences) + 1
+        max_len = 51
         
         padded_sequences = []
         for sequence in sequences:
             sequence = self.config['SOS'] + sequence
-            sequence_tensor = torch.tensor([{'A': 1, 'C': 2, 'G': 3, 'T': 4, '@': 5}[nuc] for nuc in sequence], dtype=torch.long)
+            sequence_tensor = torch.tensor([{'@': 1, 'A': 2, 'C': 3, 'G': 4, 'T': 5}[nuc] for nuc in sequence], dtype=torch.long)
             padded_sequence = F.pad(sequence_tensor, (0, max_len - len(sequence)), value=self.config['pad_value'])
             padded_sequences.append(padded_sequence)
                         
         padded_structures = []
         for structure in structures:
             structure = self.config['SOS'] + structure
-            structure_tensor = torch.tensor([{'(': 1, ')': 2, '.': 3, '@': 4}[symbol] for symbol in structure], dtype=torch.long)
+            structure_tensor = torch.tensor([{'@': 1, '(': 2, ')': 3, '.': 4}[symbol] for symbol in structure], dtype=torch.long)
             padded_structure= F.pad(structure_tensor, (0, max_len - len(structure)), value=self.config['pad_value'])
             padded_structures.append(padded_structure)
 

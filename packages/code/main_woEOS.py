@@ -11,6 +11,8 @@ import random
 from NpEncoder import *
 from torch.utils.data import Dataset, ConcatDataset
 from torch.nn.utils.rnn import pad_sequence
+from sklearn.metrics import classification_report
+from sklearn.preprocessing import MultiLabelBinarizer
 
 config_ = config.get_config()
 
@@ -163,6 +165,31 @@ def mock_train_model(config, train_dataloader, valid_dataloader):
     model_path = f"dummy_model_{valid_loss}.pth"
     return valid_loss, model_path
 """
+
+def calculate_metrics(targets, predictions, mfes, num_hairpins):
+
+    # Extract predicted and target sequences
+    predicted_sequences = [item for item in predictions]
+    target_sequences = [item for item in targets]
+    
+    y_true = np.concatenate(target_sequences)
+    y_pred = np.concatenate(predicted_sequences)
+
+    # Define your class labels
+    class_labels = ['PAD', 'SOS', '(', ')', '.']
+
+    # Calculate class-wise metrics and return as a dictionary
+    report_dict = classification_report(y_true, y_pred, target_names=class_labels, output_dict=True)
+
+    # Create a dictionary with the metrics
+    metrics = {
+        "report": report_dict,
+        "mse_mfes": mfes,
+        "mse_hairpins": num_hairpins
+    }
+
+    with open('results/2p5M_woEOS_output_with_metrics.json', 'w') as file:
+        json.dump(metrics, file, indent=4)
         
 
 def train_all():
@@ -187,20 +214,38 @@ def train_all():
             for t in target:
                 all_targets.append(t.tolist())
 
-        result = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
-
-        data = {
-            'predictions': result,
-            'targets': all_targets
-        }
-
-        with open(f'results/{data_name}_woEOS_output.json', 'w') as f:
-            json.dump(data, f, indent=4)
+        #result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
 
 
-train_all()
+#train_all()
+data_name = '2p5M'
+
+train, valid, test = get_data_structures(data_name)
+test_dataloader = BucketDataLoader_woEOS(test, config_)
 
 
+with open(f'data/splits/test_2p5M_struct.pkl', 'rb') as file:
+    data_gen = pickle.load(file)
+new_data = []
+for d in data_gen:
+    sq,_,_,_ = d
+    if len(sq)==10:
+        new_data.append(d)
+    if len(new_data)==3:
+        break
+#new_data = dataset.count_hairpins(new_data)
+test_dataloader = BucketDataLoader_woEOS(new_data, config_)
+
+
+targets = []
+for _, _, tgt, _ in test_dataloader:
+    for t in tgt:
+        targets.append(t.tolist())
+
+model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/mixembed-a03-62914-2p5M_weEOS_model_checkpoint.pth"
+
+result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
+calculate_metrics(targets, result, mfes, num_hairpins)
 #hyperparam_tune(objective_function)
 
 """
