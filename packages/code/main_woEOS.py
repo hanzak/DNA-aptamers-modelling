@@ -14,6 +14,7 @@ from torch.nn.utils.rnn import pad_sequence
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import MultiLabelBinarizer
 
+#config_ = config.get_config_nocomplex()
 config_ = config.get_config()
 
 best_validation_loss = float(1e9)
@@ -166,34 +167,42 @@ def mock_train_model(config, train_dataloader, valid_dataloader):
     return valid_loss, model_path
 """
 
-def calculate_metrics(targets, predictions, mfes, num_hairpins):
+def calculate_metrics(targets, predictions, mfes, num_hairpins, filename):
 
     # Extract predicted and target sequences
     predicted_sequences = [item for item in predictions]
     target_sequences = [item for item in targets]
-    
+        
     y_true = np.concatenate(target_sequences)
     y_pred = np.concatenate(predicted_sequences)
+    
+    non_padding_mask = (y_true != 0) & (y_true != 1)
 
+    # Apply the mask to filter out padding
+    y_true_without_padding = y_true[non_padding_mask]
+    y_pred_without_padding = y_pred[non_padding_mask]
+    
     # Define your class labels
-    class_labels = ['PAD', 'SOS', '(', ')', '.']
+    class_labels = ['(', ')', '.', 'EOS']
+    class_labels_no_PAD = ['(', ')', '.', 'EOS']
 
-    # Calculate class-wise metrics and return as a dictionary
-    report_dict = classification_report(y_true, y_pred, target_names=class_labels, output_dict=True)
-
-    # Create a dictionary with the metrics
+    try:
+        report_dict = classification_report(y_true_without_padding, y_pred_without_padding, target_names=class_labels, output_dict=True)
+    except:
+        report_dict = classification_report(y_true_without_padding, y_pred_without_padding, target_names=class_labels_no_PAD, output_dict=True)
+    
     metrics = {
         "report": report_dict,
         "mse_mfes": mfes,
         "mse_hairpins": num_hairpins
     }
 
-    with open('results/2p5M_woEOS_output_with_metrics.json', 'w') as file:
+    with open(f'results/gen/2p5M_{filename}_output_with_metrics.json', 'w') as file:
         json.dump(metrics, file, indent=4)
         
 
 def train_all():
-    config_ = config.get_config()
+    config_ = config.get_config_nocomplex()
     all_data_sizes = ['2p5M']
     for data_name in all_data_sizes:
         config_['data_size'] = data_name
@@ -215,25 +224,94 @@ def train_all():
                 all_targets.append(t.tolist())
 
         #result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
+        #calculate_metrics(all_targets, result, mfes, num_hairpins)
 
 
 #train_all()
 data_name = '2p5M'
 
-train, valid, test = get_data_structures(data_name)
-test_dataloader = BucketDataLoader_woEOS(test, config_)
+#train, valid, test = get_data_structures(data_name)
+#test_dataloader = BucketDataLoader_woEOS(test, config_)
 
 
-with open(f'data/splits/test_2p5M_struct.pkl', 'rb') as file:
+with open(f'data/data_test.pkl', 'rb') as file:
     data_gen = pickle.load(file)
+"""
 new_data = []
+
 for d in data_gen:
     sq,_,_,_ = d
-    if len(sq)<15:
+    if len(sq)>=10 and len(sq) <=50:
         new_data.append(d)
-    if len(new_data)==10:
-        break
-#new_data = dataset.count_hairpins(new_data)
+    #new_data = dataset.count_hairpins(new_data)
+test_dataloader = BucketDataLoader_woEOS(new_data, config_)
+
+targets = []
+for _, _, tgt, _ in test_dataloader:
+    for t in tgt:
+        targets.append(t.tolist())
+            
+model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/2p5M_95_complex_wEOS_model_checkpoint.pth"
+
+result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
+calculate_metrics(targets, result, mfes, num_hairpins, f'sim_all')
+    
+"""
+for k in range(50,100,10):
+    new_data = []
+    i=0
+    if k == 60 or k == 70 or k == 80 or k==90:
+        i=1
+    else: 
+        i=0
+    for d in data_gen:
+        sq,_,_,_ = d
+        if len(sq)>=k+i and len(sq) <=k+10:
+            new_data.append(d)
+    #new_data = dataset.count_hairpins(new_data)
+    test_dataloader = BucketDataLoader_woEOS(new_data, config_)
+    
+
+
+    targets = []
+    for _, _, tgt, _ in test_dataloader:
+        for t in tgt:
+            targets.append(t.tolist())
+
+    print(len(targets))
+
+    model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/2p5M_95_complex_wEOS_model_checkpoint.pth"
+
+    result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
+    calculate_metrics(targets, result, mfes, num_hairpins, f'gen_{k}_{k+10}')
+
+
+"""
+model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/2p5M_seqlen_woEOS_model_checkpoint.pth"
+
+result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
+calculate_metrics(targets, result, mfes, num_hairpins, 'seqlen')
+
+model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/2p5M_model_checkpoint.pth"
+
+result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
+calculate_metrics(targets, result, mfes, num_hairpins, 'normal')
+#hyperparam_tune(objective_function)
+"""
+
+
+"""
+with open(f'data/priming/data_priming_2p5M.pkl', 'rb') as file:
+    data_gen = pickle.load(file)
+    
+new_data = []
+l=50
+r=61
+for d in data_gen:
+    sq,_,_ = d
+    if len(sq)>l  and len(sq)<r:
+        new_data.append(d)
+new_data = dataset.count_hairpins(new_data)
 test_dataloader = BucketDataLoader_woEOS(new_data, config_)
 
 
@@ -241,38 +319,12 @@ targets = []
 for _, _, tgt, _ in test_dataloader:
     for t in tgt:
         targets.append(t.tolist())
-
-model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/mixembed-a03-62914-2p5M_weEOS_model_checkpoint.pth"
-
+        
+model_checkpoint_path = f"packages/model/model_checkpoint/{data_name}/2p5M_weEOS_model_checkpoint.pth"
 result, mfes, num_hairpins = transformer_woEOS.evaluate_on_test(model_checkpoint_path, test_dataloader, config_)
 calculate_metrics(targets, result, mfes, num_hairpins)
-#hyperparam_tune(objective_function)
+"""    
 
-"""
-with open(f'data/data_generalization.pkl', 'rb') as file:
-    data_gen = pickle.load(file)
-    
-new_data = []
-testing=True
-l=50
-r=61
-while testing:
-    if r == 101:
-        testing=False
-    for d in data_gen:
-        sq,_,_ = d
-        if len(sq)>l  and len(sq)<r:
-            new_data.append(d)
-    new_data = dataset.count_hairpins(new_data)
-        
-    test_dataloader = BucketDataLoader_woEOS(new_data, config_)
-    pred, act = transformer_woEOS.evaluate_model(config_, test_dataloader, "packages/model/model_checkpoint/2p5M/2p5M_woEOS_model_checkpoint.pth")
-    
-    new_data=[]
-    
-    l+=10
-    r+=10
-"""
 
 #for i in range (len(pred)):
    # print(f"pred: {pred[i]}, act: {act[i]}")

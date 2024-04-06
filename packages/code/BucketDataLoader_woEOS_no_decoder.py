@@ -9,8 +9,9 @@ class BucketDataLoader_woEOS_no_decoder(DataLoader):
 
     def collate_fn(self, batch):
 
-        sequences, mfe, struct, num_hairpins = zip(*batch)
-        max_len = max(len(seq) for seq in sequences) + 1
+        sequences, mfe, structures, num_hairpins = zip(*batch)
+        max_len = max(len(seq) for seq in sequences)
+        #max_len = 50
 
         padded_sequences = []
         for sequence in sequences:
@@ -18,11 +19,21 @@ class BucketDataLoader_woEOS_no_decoder(DataLoader):
             padded_sequence = F.pad(sequence_tensor, (0, max_len - len(sequence_tensor)), value=self.config['pad_value'])
             padded_sequences.append(padded_sequence)
             
+        
+        padded_structures = []
+        for structure in structures:
+            structure_tensor = torch.tensor([{'(': 1, ')': 2, '.': 3}[symbol] for symbol in structure], dtype=torch.long)
+            padded_structure= F.pad(structure_tensor, (0, max_len - len(structure)), value=self.config['pad_value'])
+            padded_structures.append(padded_structure)
+        
+            
+        padded_structures = torch.stack(padded_structures)
         padded_sequences = torch.stack(padded_sequences)
         mfe_tensor = torch.tensor(mfe)
         mfe_tensor = mfe_tensor.unsqueeze(1)
         num_hairpins_tensor = torch.tensor(num_hairpins)
         num_hairpins_tensor = num_hairpins_tensor.unsqueeze(1)        
 
-        return padded_sequences, mfe_tensor, num_hairpins_tensor
+        return padded_sequences, padded_structures, mfe_tensor, num_hairpins_tensor
+        #return padded_sequences, mfe_tensor, num_hairpins_tensor
 
