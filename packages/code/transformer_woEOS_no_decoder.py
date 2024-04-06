@@ -86,7 +86,8 @@ class Transformer(nn.Module):
             dropout = self.dropout
         )
                         
-        self.embedding = nn.Embedding(self.src_vocab_size, self.d_model)
+        self.embedding1 = nn.Embedding(self.src_vocab_size, self.d_model)
+        self.embedding2= nn.Embedding((self.src_vocab_size+1), self.d_model)
         
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model = self.d_model,
@@ -106,27 +107,64 @@ class Transformer(nn.Module):
         self.init_weights()
         
         self.to(self.device)
-                                     
-    def forward(self, src, src_mask, src_padding_mask):        
-        batchsize = src.size(0)
+            
+    """
+    def forward(self, src1, src_mask, src_padding_mask):        
+        batchsize = src1.size(0)
         
-        device = src.device
+        device = src1.device
                 
-        src = self.embedding(src) * math.sqrt(self.d_model)
-        src = self.positional_encoder(src)
+        src1 = self.embedding1(src1) * math.sqrt(self.d_model)
+        src1 = self.positional_encoder(src1)
         
+        src = src1
+
         encoder_output = self.transformer_encoder(src,mask=src_mask, src_key_padding_mask=src_padding_mask)
         
         #print(encoder_output*~src_padding_mask.unsqueeze(-1))
-        mean_encoder_out = torch.mean(encoder_output*~src_padding_mask.unsqueeze(-1), dim=1)
-
+        #mean_encoder_out = torch.mean(encoder_output*~src_padding_mask.unsqueeze(-1), dim=1)
+        non_padded_count = torch.sum(~src_padding_mask, dim=1, keepdim=True)
+        sum_encoder_out = torch.sum(encoder_output * ~src_padding_mask.unsqueeze(-1), dim=1)
+        mean_encoder_out = sum_encoder_out / non_padded_count
         mfe = self.mfe_out(mean_encoder_out)
         num_hairpins_pred = self.num_hairpins_out(mean_encoder_out)  
 
         return mfe, num_hairpins_pred 
     
+    """
+    def forward(self, src1, src2, src_mask, src_padding_mask):        
+        batchsize = src1.size(0)
+        
+        device = src1.device
+                
+        src1 = self.embedding1(src1) * math.sqrt(self.d_model)
+        src1 = self.positional_encoder(src1)
+        
+        
+        src2 = self.embedding2(src2) * math.sqrt(self.d_model)
+        src2 = self.positional_encoder(src2)
+        
+        src = src1+src2
+        
+        #src = src1
+        
+        encoder_output = self.transformer_encoder(src,mask=src_mask, src_key_padding_mask=src_padding_mask)
+        
+        #print(encoder_output*~src_padding_mask.unsqueeze(-1))
+        #mean_encoder_out = torch.mean(encoder_output*~src_padding_mask.unsqueeze(-1), dim=1)
+        non_padded_count = torch.sum(~src_padding_mask, dim=1, keepdim=True)
+        sum_encoder_out = torch.sum(encoder_output * ~src_padding_mask.unsqueeze(-1), dim=1)
+        mean_encoder_out = sum_encoder_out / non_padded_count
+        mfe = self.mfe_out(mean_encoder_out)
+        num_hairpins_pred = self.num_hairpins_out(mean_encoder_out)  
+
+        return mfe, num_hairpins_pred 
+    
+    
+    
     def init_weights(self):
-        nn.init.xavier_uniform_(self.embedding.weight)
+        nn.init.xavier_uniform_(self.embedding1.weight)
+        nn.init.xavier_uniform_(self.embedding2.weight)
         
         for layer in self.modules():
             if isinstance(layer, nn.Linear):
@@ -187,7 +225,8 @@ def train_model(config, train_dataloader, valid_dataloader):
     #Tensorboard output folder and init
     ################
     start_time = datetime.datetime.now().strftime("%d-%m-%Y_%H%M%S")
-    foldername = str(ID) + "_" + str({config['data_size']}) + "_woEOS_no-decoder_complex_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size']) + "_dropout_" + str(config['dropout'])
+    #foldername = str(ID) + "_" + str({config['data_size']}) + "_mix_no-decoder_complex_lr_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size']) + "_dropout_" + str(config['dropout'])
+    foldername = "TEST"
     log_dir = os.path.join(config['exp_name']+config['data_size'], foldername)
     os.makedirs(log_dir, exist_ok=True)
     writer = tb.SummaryWriter(log_dir=log_dir)
@@ -236,7 +275,8 @@ def train_model(config, train_dataloader, valid_dataloader):
         #iterator used in an attempt to save memory. using nparray instead of lists.
         it=0
         for i,batch in enumerate(batch_iterator):
-            sq, mfe, num_hairpins = batch
+            #sq, mfe, num_hairpins = batch
+            sq, stuct, mfe, num_hairpins = batch
                         
             #when adding custom loss, need to convert this to float for some reasons.
             mfe=mfe.float()
@@ -244,11 +284,13 @@ def train_model(config, train_dataloader, valid_dataloader):
             
             optimizer.zero_grad()
             
-            sq, mfe, num_hairpins = sq.to(device), mfe.to(device), num_hairpins.to(device)
+            sq, stuct, mfe, num_hairpins = sq.to(device),stuct.to(device), mfe.to(device), num_hairpins.to(device)
+            #sq, mfe, num_hairpins = sq.to(device), mfe.to(device), num_hairpins.to(device)
             
             src_mask, src_padding_mask = create_mask(sq)
             src_mask, src_padding_mask = src_mask.to(device), src_padding_mask.to(device)
-            mfes, predicted_num_hairpins = model(sq, src_mask, src_padding_mask)
+            #mfes, predicted_num_hairpins = model(sq, src_mask, src_padding_mask)
+            mfes, predicted_num_hairpins = model(stuct,sq, src_mask, src_padding_mask)
                                     
             loss_mfe = loss_function_mse(mfes, mfe)
             loss_num_hairpins = loss_function_mse(predicted_num_hairpins, num_hairpins)                        
@@ -307,17 +349,20 @@ def train_model(config, train_dataloader, valid_dataloader):
         it=0
         with torch.no_grad():
             for batch in batch_iterator_valid:                
+                #sq, stuct, mfe, num_hairpins = batch
                 sq, mfe, num_hairpins = batch
             
                 #when adding custom loss, need to convert this to float for some reasons.
                 mfe=mfe.float()
                 num_hairpins=num_hairpins.float()
 
+                #sq, stuct, mfe, num_hairpins = sq.to(device), stuct.to(device), mfe.to(device), num_hairpins.to(device)
                 sq, mfe, num_hairpins = sq.to(device), mfe.to(device), num_hairpins.to(device)
 
                 src_mask, src_padding_mask = create_mask(sq)
                 src_mask, src_padding_mask = src_mask.to(device), src_padding_mask.to(device)
                 mfes, predicted_num_hairpins = model(sq, src_mask, src_padding_mask)
+                #mfes, predicted_num_hairpins = model(stuct, sq, src_mask, src_padding_mask)
 
                 pred_mfe = mfes.detach().cpu().numpy()
                 act_mfe = mfe.detach().cpu().numpy()
@@ -378,7 +423,8 @@ def train_model(config, train_dataloader, valid_dataloader):
             best_mse_valid_mfe = mse_valid_mfe
             best_mse_valid_num_hairpins = mse_valid_num_hairpins
             counter = 0
-            best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/{config['data_size']}_weEOS_no-decoder_complex_model_checkpoint_continue.pth"
+            #best_model_path = f"packages/model/model_checkpoint/{config['data_size']}/{config['data_size']}_mix_no-decoder_complex_model_checkpoint_continue.pth"
+            best_model_path = "TEST"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -390,8 +436,8 @@ def train_model(config, train_dataloader, valid_dataloader):
         
         if counter > early_stop:
             print(f"Stopped early at epoch {epoch+1}")
-            #plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
-            #plot_predvsactual(writer, actual_num_hairpins_valid, best_predicted_num_hairpins_valid, epoch, best_mse_valid_num_hairpins, "Valid", "num_hairpins")
+            plot_predvsactual(writer, actual_mfes_valid, best_predicted_mfes_valid, epoch, best_mse_valid_mfe, "Valid", "mfe")
+            plot_predvsactual(writer, actual_num_hairpins_valid, best_predicted_num_hairpins_valid, epoch, best_mse_valid_num_hairpins, "Valid", "num_hairpins")
             break
         
 
@@ -486,17 +532,20 @@ def evaluate_model(config, test_dataloader, model_path):
     print_prediction=True
     with torch.no_grad():
         for batch in test_dataloader:            
-            sq, mfe, num_hairpins = batch
+            sq, struct, mfe, num_hairpins = batch
+            #sq, mfe, num_hairpins = batch
             
             #when adding custom loss, need to convert this to float for some reasons.
             mfe=mfe.float()
             num_hairpins=num_hairpins.float()
             
-            sq, mfe, num_hairpins = sq.to(device), mfe.to(device), num_hairpins.to(device)
+            #sq, mfe, num_hairpins = sq.to(device), mfe.to(device), num_hairpins.to(device)
+            sq, struct, mfe, num_hairpins = sq.to(device), struct.to(device), mfe.to(device), num_hairpins.to(device)
             
             src_mask, src_padding_mask = create_mask(sq)
             src_mask, src_padding_mask = src_mask.to(device), src_padding_mask.to(device)
-            mfes, predicted_num_hairpins = model(sq, src_mask, src_padding_mask)
+            mfes, predicted_num_hairpins = model(struct, sq, src_mask, src_padding_mask)
+            #mfes, predicted_num_hairpins = model(sq, src_mask, src_padding_mask)
                                     
             loss_mfe = loss_function_mse(mfes, mfe)
             loss_num_hairpins = loss_function_mse(predicted_num_hairpins, num_hairpins)   
@@ -520,12 +569,12 @@ def evaluate_model(config, test_dataloader, model_path):
     
     total_test_loss = mse_test_mfe + mse_test_num_hairpins
     
-    print(f'MSE-mfe: {mse_test_mfe}, MSE-num_hairpins: {mse_test_num_hairpins}')
+    print(f'MSE-mfe: {round(mse_test_mfe,6)}, MSE-num_hairpins: {round(mse_test_num_hairpins,6)}')
     
     #plot_predvsactual(writer, actual_mfes_test, predicted_values_test, 0, mse_test_mfe, "Test", "mfe")
     #plot_predvsactual(writer, actual_num_hairpins_test, predicted_num_hairpins_test, 0, mse_test_num_hairpins, "Test", "num_hairpins")
     
-    return predicted_mfes_test, actual_mfes_test
+    return predicted_mfes_test, actual_mfes_test, predicted_num_hairpins_test, actual_num_hairpins_test
 
 
 def create_mask(src):

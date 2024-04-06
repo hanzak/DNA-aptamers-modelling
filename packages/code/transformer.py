@@ -547,7 +547,6 @@ def train_model(config, train_dataloader, valid_dataloader):
                         print(mfe[j])
                         
                     print_prediction=False
-                
                         
                 loss_custom = custom_loss(predicted_structures, target_out, predicted_indices)                
                 running_ce += loss_custom.item()

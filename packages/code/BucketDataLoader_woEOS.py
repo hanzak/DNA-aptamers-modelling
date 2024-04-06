@@ -14,20 +14,23 @@ class BucketDataLoader_woEOS(DataLoader):
         #batch.sort(key=lambda x: len(x[0]), reverse=False)
 
         sequences, mfe, structures, num_hairpins = zip(*batch)
-        max_len = 51
+        max_len_seq = max(len(seq) for seq in sequences)
+        #max_len_struct = max(len(s) for s in structures) + 1
+        max_len_struct = max(len(s) for s in structures) + 2
         
         padded_sequences = []
         for sequence in sequences:
-            sequence = self.config['SOS'] + sequence
-            sequence_tensor = torch.tensor([{'@': 1, 'A': 2, 'C': 3, 'G': 4, 'T': 5}[nuc] for nuc in sequence], dtype=torch.long)
-            padded_sequence = F.pad(sequence_tensor, (0, max_len - len(sequence)), value=self.config['pad_value'])
+            sequence_tensor = torch.tensor([{'A': 1, 'C': 2, 'G': 3, 'T': 4}[nuc] for nuc in sequence], dtype=torch.long)
+            padded_sequence = F.pad(sequence_tensor, (0, max_len_seq - len(sequence)), value=self.config['pad_value'])
             padded_sequences.append(padded_sequence)
                         
         padded_structures = []
         for structure in structures:
-            structure = self.config['SOS'] + structure
-            structure_tensor = torch.tensor([{'@': 1, '(': 2, ')': 3, '.': 4}[symbol] for symbol in structure], dtype=torch.long)
-            padded_structure= F.pad(structure_tensor, (0, max_len - len(structure)), value=self.config['pad_value'])
+            structure = self.config['SOS'] + structure + self.config['EOS'] 
+            #structure = self.config['SOS'] + structure
+            structure_tensor = torch.tensor([{'@': 1, '(': 2, ')': 3, '.': 4, '$': 5}[symbol] for symbol in structure], dtype=torch.long)
+            #structure_tensor = torch.tensor([{'@': 1, '(': 2, ')': 3, '.': 4}[symbol] for symbol in structure], dtype=torch.long)
+            padded_structure= F.pad(structure_tensor, (0, max_len_struct - len(structure)), value=self.config['pad_value'])
             padded_structures.append(padded_structure)
 
         padded_sequences = torch.stack(padded_sequences)
