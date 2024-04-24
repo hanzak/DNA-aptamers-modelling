@@ -11,6 +11,15 @@ Il est donc important, avant d'éxécuter le fichier dummy, d'avoir ces fichiers
   - dummy_test.pkl
   - model_utils.py
 
+Les modèles entrainés sont également fournis :
+  - model_mfe.pth
+  - model_hairpins.pth
+  - model_struct.pth
+
+Respectivement, pour MFE, hairpins et Structure secondaire.
+Ces modèles ont été entrainés sur 5 millions de données. Les données sont : train_5M_struct.pkl dans le folder Data du main repos.
+Les métriques présentées dans le rapport sont obtenus avec les données de data_test.pkl.
+
 (Anglais)
 
 The main file we used to train and implement our CNNs is : cnn_ml.ipynb
@@ -25,3 +34,10 @@ To test, you can launch all the cells in the notebook, make sure to have in the 
   - dummy_test.pkl
   - model_utils.py
 
+The trained models are also given in this folder : 
+  - model_mfe.pth
+  - model_hairpins.pth
+  - model_struct.pth
+
+These model are respectively for : MFE, hairpins and secondary structure. They were trained on 5 million sequences from the file : train_5M_struct.pkl (inside the Data folder in main repos).
+The metrics shown in the rapport are from the model prediction on the dataset : data_test.pkl.
