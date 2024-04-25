@@ -1,6 +1,7 @@
 import argparse
 from utils import Utils
 import sys
+import os
 
 class MainClass:
     """
@@ -12,30 +13,34 @@ class MainClass:
 
     def run(self):
         if self.action == "train":
-            datasize = input("Which datasize to use: 250k, 1p5M, 2p5M, 5M \n Type here:")
-            if datasize.strip() not in ['250k', '1p5M', '2p5M', '5M']:
+            datasize = input("Which datasize to use: dummy, 250k, 1p5M, 2p5M, 5M \n Type here:")
+            if datasize.strip() not in ['dummy', '250k', '1p5M', '2p5M', '5M']:
                 print("Invalid choice")
                 return
             print("You chose:", datasize)
-            file_name = input(f"Specify 'file_name' for your model checkpoint: packages/model/model_checkpoint/{datasize}/file_name.pth \n Type here:").strip()
-            is_file = Utils.check_path(f"packages/model/model_checkpoint/{datasize}/{file_name}.pth")
+            file_name = input(f"Specify 'file_name' for your model checkpoint: Transformer/packages/model/model_checkpoint/{datasize}/file_name.pth \n Type here:").strip()
+            is_file = Utils.check_path(f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth")
             if is_file:
                 print("File already exists.")
                 return
-            file_path = f"packages/model/model_checkpoint/{datasize}/{file_name}.pth"
+            folder_path = f"Transformer/packages/model/model_checkpoint/{datasize}"
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path)
+                print(f"Folder created: {folder_path}")
+            file_path = f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth"
             Utils.train_model(self.model, datasize, file_path)
         elif self.action == "evaluate":
-            datasize = input("Which datasize was used to train the model: 250k, 1p5M, 2p5M, 5M \n Type here:").strip()
-            if datasize not in ['250k', '1p5M', '2p5M', '5M']:
+            datasize = input("Which datasize was used to train the model: dummy, 250k, 1p5M, 2p5M, 5M \n Type here:").strip()
+            if datasize not in ['dummy', '250k', '1p5M', '2p5M', '5M']:
                 print("Invalid choice")
                 return
             print("You chose:", datasize)
-            file_name = input(f"Specify 'file_name' : packages/model/model_checkpoint/{datasize}/file_name.pth \n Type here:").strip()
-            is_file = Utils.check_path(f"packages/model/model_checkpoint/{datasize}/{file_name}.pth")
+            file_name = input(f"Specify 'file_name' : Transformer/packages/model/model_checkpoint/{datasize}/file_name.pth \n Type here:").strip()
+            is_file = Utils.check_path(f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth")
             if not is_file:
                 print("Invalid path")
                 return
-            file_path = f"packages/model/model_checkpoint/{datasize}/{file_name}.pth"
+            file_path = f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth"
             Utils.test_model(self.model, file_path)
             
 

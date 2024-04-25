@@ -284,13 +284,15 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
     loss_function_mse = nn.MSELoss()
     CELoss = nn.CrossEntropyLoss(weight=ce_weights, ignore_index=0)
     
-    print(get_n_params(model))
+    print(f"Total number of parameters is: {get_n_params(model)}")
     
     ################
     #Tensorboard output folder and init
     ################
     start_time = datetime.datetime.now().strftime("%d-%m-%Y_%H%M%S")
     foldername = config['data_size'] + "_" + str(config['learning_rate']) + "_batchsize_" + str(config['batch_size']) + "_dropout_" + str(config['dropout']) + "_" + str(start_time)
+    
+    #Folders are created in Transformer/packages/model/runs under the folder with the same name as the data_size used for training
     log_dir = os.path.join(config['exp_name']+config['data_size'], foldername)
     os.makedirs(log_dir, exist_ok=True)
     writer = tb.SummaryWriter(log_dir=log_dir)
@@ -527,6 +529,8 @@ def train_model(config, train_dataloader, valid_dataloader, model_checkpoint_pat
             best_mse_valid_num_hairpins = mse_valid_num_hairpins
             counter = 0
             best_model_path = model_checkpoint_path
+
+            #Modele is saved in Transformer/packages/model/model_checkpoint under the folder with the same name as the data_size used
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
