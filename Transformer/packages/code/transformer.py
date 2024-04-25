@@ -174,8 +174,6 @@ class Transformer(nn.Module):
 
         target = self.embedding_decoder(target) * math.sqrt(self.d_model)
         target = self.positional_encoder(target)
-
-        print(target.shape)
                 
         real_output = self.transformer_decoder(target, encoder_output, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=src_padding_mask)
         
