@@ -1,7 +1,7 @@
 (Francais)
 
 Le fichier principal utilisé pour entrainer les CNNs est : cnn_ml.ipynb
-Ce fichier donne un l'implémentation des fonctions ainsi que leur utilisation.
+Ce fichier donne l'implémentation des fonctions ainsi que leur utilisation.
 
 Pour que vous puissiez tester nos implémentations, nous avons créé un fichier dummy.
 Le fichier dummy est : dummy_cnn.ipynb
