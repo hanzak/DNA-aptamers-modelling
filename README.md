@@ -23,9 +23,9 @@ To run the code, follow these steps:
     - If `train` is chosen, you will be asked to specify the datasize to use for training and the filepath to save the checkpoint.
     - If `evaluate` is chosen, you will be asked to choose which datasize was used for training of the model you want to test, and then the filename of the model.pth file.
 
-Model checkpoint will be saved in **Transformer/packages/model/model_checkpoint**
+Model checkpoint will be saved in **Transformer/packages/model/model_checkpoint/**
 
-Tensorboard data is saved in **Transformer/packages/model/runs**
+Tensorboard data is saved in **Transformer/packages/model/runs/**
 
 To view tensorboard data, run the following command: `tensorboard --logdir_spec=path\to\runs\`
 
