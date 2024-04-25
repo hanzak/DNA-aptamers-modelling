@@ -27,5 +27,5 @@ Model checkpoint will be saved in **Transformer/packages/model/model_checkpoint/
 
 Tensorboard data is saved in **Transformer/packages/model/runs/**
 
-To view tensorboard data, run the following command: `tensorboard --logdir_spec=path\to\runs\`
+To view tensorboard data, run the following command: `tensorboard --logdir_spec=C:\path\to\runs\`
 
