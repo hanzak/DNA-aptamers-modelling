@@ -17,11 +17,12 @@ best_model_path = None
 #I needed that to write in JSON. dont know if i need it anymore, but better keep it.
 np.int = int
     
-class Utils():    
+class Utils:    
+    by_intervals=False
     """
     Util class containing function to make testing and running the code easier for external users.
     """
-    def check_file(file_path):
+    def check_file(self, file_path):
         """
         Check if file exists and is not empty
 
@@ -33,7 +34,7 @@ class Utils():
         """
         return os.path.isfile(file_path) and os.stat(file_path).st_size > 0
     
-    def check_path(file_path):
+    def check_path(self, file_path):
         """
         Checks if file exists
 
@@ -46,7 +47,7 @@ class Utils():
         return os.path.isfile(file_path)
 
 
-    def get_data_structures(data_name):
+    def get_data_structures(self, data_name):
         """
         Gets datasets from specified data_name
 
@@ -87,7 +88,7 @@ class Utils():
         return train, valid, test
 
 
-    def calculate_metrics(targets, predictions, mfes, num_hairpins, filename):
+    def calculate_metrics(self, targets, predictions, mfes, num_hairpins, filename):
         """
         Calculates the relevant metrics from predictions of model
 
@@ -130,7 +131,7 @@ class Utils():
             json.dump(metrics, file, indent=4)
 
 
-    def train_model(model, data_size, model_checkpoint_path):
+    def train_model(self, model, data_size, model_checkpoint_path):
         """
         Calls the relevant functions to train the model
 
@@ -161,7 +162,7 @@ class Utils():
             transformer.train_model(config_, train_dataloader, valid_dataloader, model_checkpoint_path)
             
     
-    def test_model(model, file_path):
+    def test_model(self, model, file_path):
         """
         Calls the relevant functions to test the model
 
@@ -179,6 +180,10 @@ class Utils():
         
         new_data = []
 
+        if self.by_intervals:
+            self.__test_model_by_intervals(data, config_, file_path)
+            return
+        
         for d in data:
             sq,_,_,_ = d
             if len(sq)>=10 and len(sq) <=50:
@@ -191,7 +196,32 @@ class Utils():
                 for t in tgt:
                     targets.append(t.tolist())
             result, mfes, num_hairpins = transformer.evaluate_model(test_dataloader, file_path, config_)
-            Utils.calculate_metrics(targets, result, mfes, num_hairpins, f'test_{model}')
+            self.calculate_metrics(targets, result, mfes, num_hairpins, f'test_{model}')
         else:
-            pred_mfes, act_mfes, pred_hairpins, act_hairpins = transformer_no_decoder.evaluate_model(test_dataloader,file_path, config_)
+            transformer_no_decoder.evaluate_model(test_dataloader,file_path, config_)
+
+    def set_by_intervals(self, bool_value: bool):
+        self.by_intervals=bool_value
+
+
+    def __test_model_by_intervals(self, data, config, file_path):
+        for k in [10, 21, 31, 41]:
+            new_data=[]
+            for d in data:
+                sq,_,_,_ = d
+                if len(sq)>=k and len(sq) <= k+10-(k%10):
+                    new_data.append(d)
+            test_dataloader = BucketDataLoader(new_data, config)
+
+            if config['type']=="decoder":
+                targets = []
+                for _, _, tgt, _ in test_dataloader:
+                    for t in tgt:
+                        targets.append(t.tolist())
+                result, mfes, num_hairpins = transformer.evaluate_model(test_dataloader, file_path, config)
+                self.calculate_metrics(targets, result, mfes, num_hairpins, f"test_{config['type']}_{k}to{k+10-(k%10)}")
+            else:
+                transformer_no_decoder.evaluate_model(test_dataloader,file_path, config)
+
+    
 

@@ -4,6 +4,7 @@ import sys
 import os
 
 class MainClass:
+    utils = Utils()
     """
     Main class handling user interactions
     """
@@ -13,13 +14,13 @@ class MainClass:
 
     def run(self):
         if self.action == "train":
-            datasize = input("Which datasize to use: dummy, 250k, 1p5M, 2p5M, 5M \n Type here:")
-            if datasize.strip() not in ['dummy', '250k', '1p5M', '2p5M', '5M']:
+            datasize = input("Which datasize to use: dummy, 250k, 1p5M, 2p5M, 5M \n Type here:").lower()
+            if datasize.strip() not in ['dummy', '250k', '1p5m', '2p5m', '5m']:
                 print("Invalid choice")
                 return
             print("You chose:", datasize)
             file_name = input(f"Specify 'file_name' for your model checkpoint: Transformer/packages/model/model_checkpoint/{datasize}/file_name.pth \n Type here:").strip()
-            is_file = Utils.check_path(f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth")
+            is_file = self.utils.check_path(f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth")
             if is_file:
                 print("File already exists.")
                 return
@@ -28,20 +29,25 @@ class MainClass:
                 os.makedirs(folder_path)
                 print(f"Folder created: {folder_path}")
             file_path = f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth"
-            Utils.train_model(self.model, datasize, file_path)
+            self.utils.train_model(self.model, datasize, file_path)
         elif self.action == "evaluate":
-            datasize = input("Which datasize was used to train the model: dummy, 250k, 1p5M, 2p5M, 5M \n Type here:").strip()
-            if datasize not in ['dummy', '250k', '1p5M', '2p5M', '5M']:
+            datasize = input("Which datasize was used to train the model: dummy, 250k, 1p5M, 2p5M, 5M \n Type here:").strip().lower()
+            if datasize not in ['dummy', '250k', '1p5m', '2p5m', '5m']:
                 print("Invalid choice")
                 return
             print("You chose:", datasize)
-            file_name = input(f"Specify 'file_name' : Transformer/packages/model/model_checkpoint/{datasize}/file_name.pth \n Type here:").strip()
-            is_file = Utils.check_path(f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth")
+            file_name = input(f"Specify the existing'file_name' : Transformer/packages/model/model_checkpoint/{datasize}/file_name.pth \n Type here:").strip()
+            is_file = self.utils.check_path(f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth")
             if not is_file:
                 print("Invalid path")
                 return
             file_path = f"Transformer/packages/model/model_checkpoint/{datasize}/{file_name}.pth"
-            Utils.test_model(self.model, file_path)
+            by_interval = input("Do you want to test by intervals (10-20, 21-30, 31-40, 41-50)? [yes, no]").strip().lower()
+            if by_interval=='no' or by_interval=='n':
+                self.utils.set_by_intervals(False)
+            elif by_interval=='yes' or by_interval=='y':
+                self.utils.set_by_intervals(True)
+            self.utils.test_model(self.model, file_path)
             
 
 if __name__ == "__main__":
