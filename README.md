@@ -29,6 +29,13 @@ Tensorboard data is saved in **Transformer/packages/model/runs/**
 
 To view tensorboard data, run the following command: `tensorboard --logdir_spec=C:\path\to\runs\`
 
+For the `\results` folder:
+- The `\results` folder contains the results of the Transformer Encoder&Decoder model.
+- `\results\final` contain the results on DNA sequences of length 10 to 50 from the data_test.pkl.
+- `\results\gen` contain the results on DNA sequences of length 51 to 100 from the data_test.pkl.
+- `\results\sim` contain the results on DNA sequences of length 10 to 50 from the data_test.pkl using the `generate_sequences_sim` method in the `transformer.py` file.
+
+
 ## How to Run: CNN
 Python version: `3.9.5`
 
