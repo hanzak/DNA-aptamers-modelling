@@ -9,7 +9,7 @@ Yehao Yan (yehao.yan@umontreal.ca)
 
 ## Description
 
-Comparison of the performance of different machine learning models in the prediction of structual properties of DNA sequences.
+Comparison of the performance of different machine learning models in the prediction of structual properties of DNA sequences. You will find the report in the `\Report` folder.
 
 ## Requirements
 
