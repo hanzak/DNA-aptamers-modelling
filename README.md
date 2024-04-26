@@ -20,7 +20,7 @@ To run the code, follow these steps:
 2. Run the main.py file from the command line with the following arguments like so: `python path/to/main.py <action> <model>`
   - `<action>` can take values of `train` or `evaluate`
   - `<model>` can take values `encoder` (for Transformer with only an Encoder) or `decoder` (for Transformer Encoder & Decoder)
-    - If `train` is chosen, you will be asked to specify the datasize to use for training and the filepath to save the checkpoint.
+    - If `train` is chosen, you will be asked to specify the datasize to use for training and the filename of the checkpoint file.
     - If `evaluate` is chosen, you will be asked to choose which datasize was used for training of the model you want to test, and then the filename of the model.pth file.
 
 Model checkpoint will be saved in **Transformer/packages/model/model_checkpoint/**
