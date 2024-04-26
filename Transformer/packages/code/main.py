@@ -46,7 +46,7 @@ class MainClass:
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Error: Missing required arguments. Usage: main.py {encoder,decoder} {train,evaluate}")
+        print("Error: Missing required arguments. Usage: main.py {train,evaluate} {encoder, decoder}")
         sys.exit(1)
     parser = argparse.ArgumentParser(description="Running program")
     parser.add_argument("action", type=str, choices=["train", "evaluate"], help="Action to take")
