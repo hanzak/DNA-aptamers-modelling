@@ -19,10 +19,10 @@ To run the code, follow these steps:
 1. Install the dependencies using the following command: `pip install torch matplotlib tensorboard tqdm numpy scikit-learn`. 
 2. Run the main.py file from the `DNA-aptamers-modelling` folder in the command line with the following arguments like so: `python Transfomer/packages/code/main.py <action> <model>`
   - `<action>` can take values of `train` or `evaluate`
-  - `<model>` can take values `encoder` (for Transformer with only an Encoder) or `decoder` (for Transformer Encoder & Decoder)
     - If `train` is chosen, you will be asked to specify the datasize to use for training and the filename of the checkpoint file.
     - If `evaluate` is chosen, you will be asked to choose which datasize was used for training of the model you want to test, and then the filename of the model.pth file. You will then be asked if you want to test the model by intervals or not [y,n].
-
+  - `<model>` can take values `encoder` (for Transformer with only an Encoder) or `decoder` (for Transformer Encoder & Decoder)
+    
 Model checkpoint will be saved in **Transformer/packages/model/model_checkpoint/**
 
 Tensorboard data is saved in **Transformer/packages/model/runs/**
