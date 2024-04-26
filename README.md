@@ -33,3 +33,6 @@ To view tensorboard data, run the following command: `tensorboard --logdir_spec=
 Python version: `3.9.5`
 
 To run the code, follow the steps described in the README_CNN.txt inside of the CNN_main file.
+
+## How to Run: LSTM
+Install the required Python packages using pip: `python -m pip install -r LSTM/requirements.txt`.
