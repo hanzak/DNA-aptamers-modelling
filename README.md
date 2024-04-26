@@ -11,6 +11,10 @@ Yehao Yan (yehao.yan@umontreal.ca)
 
 Comparison of the performance of different machine learning models in the prediction of structual properties of DNA sequences.
 
+## Requirements
+
+Git LFS is needed to access data.
+
 ## How to Run: Transformer
 Python version: `3.9.5`
 
