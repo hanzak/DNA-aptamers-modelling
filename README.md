@@ -16,7 +16,7 @@ Python version: `3.9.5`
 
 To run the code, follow these steps:
 
-1. Install the dependencies using the following command: `pip install torch matplotlib tensorboard tqdm numpy sklearn`. (If you get an error when trying to install sklearn, change `sklearn` for `scikit-learn`)
+1. Install the dependencies using the following command: `pip install torch matplotlib tensorboard tqdm numpy scikit-learn`. 
 2. Run the main.py file from the `DNA-aptamers-modelling` folder in the command line with the following arguments like so: `python Transfomer/packages/code/main.py <action> <model>`
   - `<action>` can take values of `train` or `evaluate`
   - `<model>` can take values `encoder` (for Transformer with only an Encoder) or `decoder` (for Transformer Encoder & Decoder)
