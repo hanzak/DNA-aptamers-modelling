@@ -9,7 +9,7 @@ Yehao Yan (yehao.yan@umontreal.ca)
 
 ## Description
 
-Comparison of the performance of different machine learning models in the prediction of structual properties of DNA sequences. You will find the Paper in the `\Paper` folder.
+A Comparison of deep learning models for predicting the structural properties of DNA aptamers. You will find the Paper in the `\Paper` folder.
 
 ## Requirements
 
@@ -39,9 +39,9 @@ To view tensorboard data, run the following command: `tensorboard --logdir_spec=
 
 For the `\results` folder:
 - The `\results` folder contains the results of the Transformer Encoder&Decoder model.
-- `\results\final` contain the results on DNA sequences of length 10 to 50 from the data_test.pkl.
-- `\results\gen` contain the results on DNA sequences of length 51 to 100 from the data_test.pkl.
-- `\results\sim` contain the results on DNA sequences of length 10 to 50 from the data_test.pkl using the `generate_sequences_sim` method in the `transformer.py` file.
+  - `\results\final` contain the results on DNA sequences of length 10 to 50 from the data_test.pkl.
+  - `\results\gen` contain the results on DNA sequences of length 51 to 100 from the data_test.pkl.
+  - `\results\sim` contain the results on DNA sequences of length 10 to 50 from the data_test.pkl using the `generate_sequences_sim` method in the `transformer.py` file.
 
 
 ## How to Run: CNN
